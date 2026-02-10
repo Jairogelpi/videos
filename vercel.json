@@ -1,5 +1,0 @@
-{
-    "framework": "nextjs",
-    "installCommand": "corepack enable pnpm && pnpm install",
-    "buildCommand": "turbo run build --filter=web"
-}
