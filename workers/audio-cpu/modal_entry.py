@@ -5,6 +5,9 @@ import modal
 import subprocess
 from dotenv import load_dotenv
 
+# Load .env file so secrets are available at deploy time
+load_dotenv()
+
 # Define the Modal Image with all dependencies
 image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -37,8 +40,7 @@ image = (
 
 app = modal.App("video-jobs-audio-cpu", image=image)
 
-# Secrets (Make sure these are set in Modal dashboard or .env)
-# We can also pass them explicitly if they are in the local .env
+# Secrets (loaded from local .env at deploy time, injected into Modal container)
 secrets = [
     modal.Secret.from_dict({
         "SUPABASE_URL": os.environ.get("SUPABASE_URL", ""),
