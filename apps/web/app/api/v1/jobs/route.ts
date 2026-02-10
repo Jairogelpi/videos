@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-server';
 import { VISUAL_PRESETS } from '@repo/shared';
 
 // 1. GET /v1/jobs
 export async function GET(request: NextRequest) {
-    const { searchParams } = new URL(request.url);
-    const bodyUserId = searchParams.get('userId');
-    const userId = bodyUserId || '00000000-0000-0000-0000-000000000000';
+    // Use server client to get the real user
+    const serverSupabase = await createClient();
+    const { data: { user } } = await serverSupabase.auth.getUser();
+
+    if (!user) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
     const { data: jobs, error } = await supabase
         .from('jobs')
         .select('*, input_audio_asset_id(*), output_video_asset_id(*)')
-        .eq('user_id', userId)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
     if (error) {
@@ -24,15 +29,36 @@ export async function GET(request: NextRequest) {
 // 2. POST /v1/jobs
 export async function POST(request: NextRequest) {
     try {
+        // Get real authenticated user
+        const serverSupabase = await createClient();
+        const { data: { user } } = await serverSupabase.auth.getUser();
+
+        if (!user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        const userId = user.id;
+
         const body = await request.json();
         const {
-            title, inputAudioAssetId, projectId, userId: bodyUserId, mood,
+            title, inputAudioAssetId, projectId: bodyProjectId, mood,
             styleId: bodyStyleId, prompt, position, startTime, endTime,
             targetLanguage, audioUrl, fontSize, fontFamily,
             animationEffect, lyricColor, lyricOpacity
         } = body;
 
-        const userId = bodyUserId || '00000000-0000-0000-0000-000000000000';
+        // Resolve project: use provided or find user's default project
+        let projectId = bodyProjectId;
+        if (!projectId) {
+            const { data: defaultProject } = await supabase
+                .from('projects')
+                .select('id')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .single();
+            projectId = defaultProject?.id || null;
+        }
 
         // AI STYLE SELECTION: Resolve Prompt to Style if provided (Mirroring Fastify logic)
         let styleId = bodyStyleId;

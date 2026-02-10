@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase-server';
 
 export async function POST(request: NextRequest) {
     try {
-        const { fileName, contentType, userId: bodyUserId } = await request.json();
-        const userId = bodyUserId || '00000000-0000-0000-0000-000000000000';
+        // Get real authenticated user
+        const serverSupabase = await createClient();
+        const { data: { user } } = await serverSupabase.auth.getUser();
+
+        if (!user) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        const userId = user.id;
+        const { fileName, contentType } = await request.json();
 
         const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
         const path = `${userId}/${Date.now()}-${sanitizedFileName}`;

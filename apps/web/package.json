@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@repo/shared": "workspace:*",
+    "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
     "clsx": "^2.1.0",
     "ioredis": "^5.9.2",
