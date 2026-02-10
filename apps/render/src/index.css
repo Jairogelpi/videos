@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;700;900&family=Inter:wght@400;700;900&family=Montserrat:wght@400;700;900&family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Anton&family=Bebas+Neue&family=Syne:wght@400;700;800&family=Bungee&family=Archivo+Black&family=Fraunces:ital,wght@0,400;0,700;1,400&family=Space+Grotesk:wght@400;700&family=Unbounded:wght@400;900&family=Kanit:wght@400;700&family=Lexend:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+body {
+  background-color: black;
+  color: white;
+}
