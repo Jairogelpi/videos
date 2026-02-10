@@ -145,7 +145,13 @@ def profile_audio(path: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"Advanced profiling failed: {e}")
         return {"snr": 15.0, "reverb_level": 0.1, "tempo": 120.0, "harmonic_key": "C Major", "energy_flux": [0.5]*60, "vocal_brightness": 2000.0}
-from bullmq import Worker
+
+try:
+    from bullmq import Worker
+except ImportError:
+    Worker = None
+    print("BullMQ not available (running on Modal or missing dependency). Local queue disabled.")
+
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -310,7 +316,8 @@ def generate_video_background(job_id: str, user_prompt: str, lyrics: str, audio_
         list_file = os.path.join(tmp_dir, "clips.txt")
         with open(list_file, "w") as f:
             for p in clip_paths:
-                f.write(f"file '{p.replace('\\', '/')}'\n")
+                safe_path = p.replace(chr(92), chr(47))
+                f.write("file '" + safe_path + "'\n")
         
         master_output = os.path.join(tmp_dir, "master_bg.mp4")
         subprocess.run([
