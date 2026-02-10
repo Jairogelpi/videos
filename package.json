@@ -12,11 +12,7 @@
     "prettier": "^3.0.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
-  "workspaces": [
-    "apps/*",
-    "packages/*",
-    "workers/*"
-  ]
+  "packageManager": "pnpm@9.15.4"
 }
