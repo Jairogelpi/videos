@@ -49,7 +49,7 @@ export function UploadForm() {
 
         try {
             // 1. Get Signed URL from our API
-            const signRes = await fetch('http://localhost:3001/v1/uploads/sign', {
+            const signRes = await fetch('/api/v1/uploads/sign', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -75,7 +75,7 @@ export function UploadForm() {
             setProgress(70);
 
             // 3. Create Job in our API (Passing Prompt, StyleId and targetLanguage)
-            const jobRes = await fetch('http://localhost:3001/v1/jobs', {
+            const jobRes = await fetch('/api/v1/jobs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -93,7 +93,7 @@ export function UploadForm() {
             const { jobId } = await jobRes.json();
 
             setProgress(100);
-            window.location.href = `http://localhost:3000/jobs/${jobId}`;
+            window.location.href = `/jobs/${jobId}`;
 
         } catch (err: any) {
             setError(err.message || 'An error occurred during upload.');
