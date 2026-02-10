@@ -70,7 +70,8 @@ def process_audio_job(payload: dict):
     # We need to adapt the payload to what process_job expects.
     # main.process_job expects a BullMQ-style 'job' object with .data
     
-    from main import process_job
+    # Import main AS A MODULE so we can patch CALLBACK_URL
+    import main
     
     class MockJob:
         def __init__(self, data):
@@ -109,7 +110,7 @@ def process_audio_job(payload: dict):
             print(f"[{job_data['jobId']}] Overriding CALLBACK_URL to: {payload['callback_url']}")
             main.CALLBACK_URL = payload["callback_url"]
             
-        asyncio.run(process_job(MockJob(job_data), None))
+        asyncio.run(main.process_job(MockJob(job_data), None))
         
         # --- CHAINED EXECUTION: Hand off to Render Worker ---
         print(f"[{job_data['jobId']}] Audio done. Triggering Cloud Render...")
