@@ -73,8 +73,7 @@ export async function POST(request: NextRequest) {
                 user_id: data.userId, // Worker should send userId
                 kind: kind,
                 path: url,
-                bucket: bucket,
-                metadata: metadata
+                bucket: bucket
             }).select().single();
 
             if (error) {

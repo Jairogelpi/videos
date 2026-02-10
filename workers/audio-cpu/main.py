@@ -12,6 +12,7 @@ load_dotenv()
 # Disable weights_only security checks that break WhisperX/Demucs models
 os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
 os.environ["TORCHAUDIO_BACKEND"] = "soundfile"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
     import torch
@@ -67,9 +68,10 @@ class LTXModelManager:
                     low_cpu_mem_usage=True
                 )
                 
-                # Standard Offload move layers between CPU/GPU dynamically
-                cls._pipe.enable_model_cpu_offload()
-                print("Local LTX-Video engine ready (fp16 + Model Offload).")
+                # Sequential Offload is much more aggressive (layer-by-layer) 
+                # Essential for 16GB VRAM on Modal when running T5-XXL + Transformer
+                cls._pipe.enable_sequential_cpu_offload()
+                print("Local LTX-Video engine ready (fp16 + Sequential Offload).")
             except Exception as e:
                 print(f"CRITICAL: Engine Load Failed: {e}")
                 if "1455" in str(e):
@@ -105,11 +107,25 @@ def profile_audio(path: str) -> Dict[str, Any]:
         tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
         onset_env = librosa.onset.onset_strength(y=y, sr=sr)
         
-        # Normalize energy flux for the Director
-        energy_flux_norm = (onset_env - np.min(onset_env)) / (np.max(onset_env) - np.min(onset_env) + 1e-6)
+        if len(onset_env) > 0:
+            onset_min = np.min(onset_env)
+            onset_max = np.max(onset_env)
+            range_val = onset_max - onset_min
+            energy_flux_norm = (onset_env - onset_min) / (range_val + 1e-6)
+        else:
+            energy_flux_norm = np.array([0.5])
+
         # Sample energy every 1s for the context window
-        energy_series = [float(np.mean(energy_flux_norm[i:i+sr//512])) for i in range(0, len(energy_flux_norm), sr//512)]
-        energy_summary = energy_series[::int(1.0 / (512/sr))] # roughly 1 sample per second
+        chunk_size = max(1, sr // 512)
+        energy_series = []
+        for i in range(0, len(energy_flux_norm), chunk_size):
+            chunk = energy_flux_norm[i:i + chunk_size]
+            if len(chunk) > 0:
+                energy_series.append(float(np.mean(chunk)))
+            else:
+                energy_series.append(0.5)
+        
+        energy_summary = energy_series[::max(1, int(1.0 / (512/sr)))] # roughly 1 sample per second
 
         # 4. Harmonic Key Detection
         chroma = librosa.feature.chroma_stft(y=y, sr=sr)
@@ -687,10 +703,11 @@ async def process_job(job, job_token):
                 json.dump(analysis_data, f)
 
             print(f"[{job_id}] Uploading analysis.json...")
+            # Use 'text/plain' or omit content-type if application/json is blocked by bucket policy
             supabase.storage.from_("assets").upload(
                 path=analysis_path,
                 file=local_analysis_file,
-                file_options={"content-type": "application/json", "x-upsert": "true"}
+                file_options={"content-type": "text/plain", "x-upsert": "true"}
             )
 
             # Report Asset to API

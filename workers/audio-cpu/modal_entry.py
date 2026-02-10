@@ -13,18 +13,22 @@ image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install("ffmpeg", "libsndfile1", "git")
     .pip_install(
-        "torch",
-        "torchaudio",
+        "torch==2.4.0",
+        "torchaudio==2.4.0",
         "numpy", # WhisperX compat
         "librosa",
         "scipy",
+        "matplotlib",
         "requests",
         "supabase",
         "python-dotenv",
         "google-genai",
-        "diffusers",
+        "diffusers==0.31.0",
         "transformers",
         "accelerate",
+        "xformers",
+        "sentencepiece",
+        "protobuf",
         "bitsandbytes",
         "whisperx",
         "demucs",
