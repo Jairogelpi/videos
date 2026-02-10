@@ -106,12 +106,14 @@ export async function POST(request: NextRequest) {
         if (modalUrl) {
             console.log(`[JobOrchestrator] ☁️ Hybrid Cloud Mode: Offloading job ${job.id} to Modal...`);
             try {
+                const origin = request.nextUrl.origin;
                 const modalPayload = {
                     job_id: job.id,
                     asset_id: resolvedAudioId, // We might need to resolve the path if Modal expects it
                     user_id: userId,
                     prompt: prompt || mood || "Creative visualization",
-                    style: styleId || "cinematic"
+                    style: styleId || "cinematic",
+                    callback_url: `${origin}/api/v1/internal/workers/callback`
                 };
 
                 const modalRes = await fetch(modalUrl, {
