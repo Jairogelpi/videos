@@ -539,6 +539,11 @@ headers = {
 
 def report_stage(job_id: str, status: str, progress: int, user_id: str = None, metrics: Dict[str, Any] = None):
     try:
+        if not CALLBACK_URL or "127.0.0.1" in CALLBACK_URL or "localhost" in CALLBACK_URL:
+            # Special check: If running in Modal, localhost is guaranteed to fail if the backend is local.
+            print(f"[{job_id}] ⚠️ Skipping callback to local/missing URL: {CALLBACK_URL}. (Use PUBLIC_CALLBACK_URL for remote workers)")
+            return
+
         data = {
             "jobId": job_id,
             "userId": user_id,
@@ -1179,7 +1184,7 @@ async def generate_video_background(
         ffmpeg_cmd = ["ffmpeg", "-y"] + input_args + [
             "-filter_complex", filter_complex,
             "-map", "[vfinal]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", # High Quality Encode
+            "-c:v", "libx264", "-preset", "medium", "-crf", "24", # Balance size (<50MB) and quality
             "-pix_fmt", "yuv420p",
             master_output
         ]
@@ -1610,6 +1615,36 @@ async def process_job(job, job_token, parallel_generator=None):
             
             local_analysis_file = os.path.join(tmp_dir, "analysis.json")
             # 3. Upload to Supabase Storage (with upsert)
+            storage_path = f"{job_id}/cinematic_bg.mp4"
+            print(f"[{job_id}] Uploading background video to assets/{storage_path}...")
+            
+            # Size check logging
+            file_size = os.path.getsize(final_video_with_audio_path)
+            print(f"[{job_id}] Final Video Size: {file_size / (1024*1024):.2f} MB")
+            
+            with open(final_video_with_audio_path, "rb") as f:
+                supabase.storage.from_("assets").upload(
+                    path=storage_path,
+                    file=f,
+                    file_options={"content-type": "video/mp4", "x-upsert": "true"}
+                )
+
+            # Report Asset to API
+            try:
+                resp_v = requests.post(CALLBACK_URL, headers=headers, json={
+                    "jobId": job_id,
+                    "userId": user_id,
+                    "event": "asset",
+                    "kind": "cinematic_bg",
+                    "url": storage_path, 
+                    "metadata": {"precision": "high-demucs-v3"}
+                })
+                if resp_v.status_code != 200:
+                    print(f"[{job_id}] Cinematic BG asset callback failed: {resp_v.text}")
+            except Exception as e:
+                print(f"[{job_id}] Cinematic BG asset callback skipped (Connectivity Error): {e}")
+
+            # 3. Upload vocal stem (if not already done)
             vocal_path_storage = f"{user_id}/{job_id}_vocals.wav"
             print(f"[{job_id}] Uploading vocals to assets/{vocal_path_storage}...")
             
