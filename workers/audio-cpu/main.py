@@ -1209,7 +1209,17 @@ async def generate_video_background(
 
 
 async def process_job(job, job_token, parallel_generator=None):
+    global CALLBACK_URL, headers
+    
+    # 0. Global Setup...
     job_id = job.data.get('jobId')
+    
+    # Allow per-job callback override (essential for remote workers calling back to local)
+    dynamic_callback = job.data.get('callback_url')
+    if dynamic_callback:
+        print(f"[{job_id}] 🌐 Dynamic Callback Override: {dynamic_callback}")
+        CALLBACK_URL = dynamic_callback
+        headers["Authorization"] = f"Bearer {CALLBACK_TOKEN}" # Ensure token is synced
     asset_id = job.data.get('inputAudioAssetId')
     user_id = job.data.get('userId')
     mood = job.data.get('mood', 'default')

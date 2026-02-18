@@ -204,7 +204,8 @@ class AudioWorker:
                 "styleId": payload.get("style"),
                 "startTime": 0,
                 "endTime": 60,
-                "targetLanguage": payload.get("targetLanguage")
+                "targetLanguage": payload.get("targetLanguage"),
+                "callback_url": payload.get("callback_url")
             }
 
             # Parallel Generator Hook (Distributed Async)
