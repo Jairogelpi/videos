@@ -46,63 +46,34 @@ secrets = [
 ]
 
 @app.function(
-    gpu="any", # Remotion can use GPU? Chromium software render is usually fine, but GPU might crash if headless setup is wrong.
-    # Let's start with CPU. Remotion is mostly CPU bounded for standard comps unless using WebGL heavy stuff.
-    # Actually, keep it CPU to save cost unless needed.
+    gpu="any", 
     memory=4096,
     timeout=600,
     secrets=secrets,
-    # mounts removed in favor of add_local_dir
 )
-@modal.web_endpoint(method="POST")
-def render_video_webhook(payload: dict):
+def render_video_kernel(payload: dict):
     """
-    Triggers Remotion render via CLI.
+    Internal kernel for Remotion render.
     """
     import subprocess
     import json
+    import os
     
-    print(f"Received Render Job: {payload}")
+    print(f"Starting Render Kernel for Job: {payload.get('job_id')}")
     
-    # 1. Install Dependencies (Lazy Install pattern)
-    # In a real prod setup, we'd bake this into the image, but for monorepo speed:
-    # We need to run pnpm install in the root? Or just in workers/render?
-    # Our image has nodejs.
-    
-    # We are in /root.
-    # We need to install dependencies for `workers/render`.
-    
-    # Setup pnpm workspace or just install locally
-    # Hack: just install inside workers/render
     wd = "/root/workers/render"
-    
-    # Check if node_modules exists (Modal usually persists /tmp? No.)
-    # We run npm install every time? That's slow.
-    # Better: Use modal.Image.run_commands to pre-install.
-    # But we need package.json for that.
-    # For now, we do it at runtime (slow start) or rely on creating a custom image in a separate step.
-    # Let's try runtime install (first run slow).
-    
-    # Actually, we need to install dependencies for apps/render too?
-    # Monorepos are tricky in Modal.
-    # Let's try to run `pnpm install` in /root/workers/render.
     
     print("Installing dependencies...")
     subprocess.run(["pnpm", "install"], cwd=wd, check=True)
-    # We might need to install in apps/render too if it's not hoisted
     subprocess.run(["pnpm", "install"], cwd="/root/apps/render", check=True)
     
-    # 2. Run Render
-    # We write payload to json
     payload_path = "/tmp/job.json"
     with open(payload_path, "w") as f:
         json.dump(payload, f)
         
     print("Starting Render Process...")
-    # Use tsx to run the typescript file directly
     cmd = ["npx", "tsx", "src/cli-render.ts", payload_path]
     
-    # DYNAMIC CALLBACK: Pass to subprocess via env
     env = os.environ.copy()
     if payload.get("callback_url"):
         print(f"Overriding CALLBACK_URL to: {payload['callback_url']}")
@@ -118,3 +89,18 @@ def render_video_webhook(payload: dict):
         return {"status": "error", "message": res.stderr}
         
     return {"status": "success", "message": "Render completed"}
+
+@app.function(
+    gpu="any",
+    memory=4096,
+    timeout=600,
+    secrets=secrets,
+)
+@modal.web_endpoint(method="POST")
+def render_video_webhook(payload: dict):
+    """
+    Public entrypoint for manual/API triggers.
+    Handoff to kernel for async processing.
+    """
+    render_video_kernel.spawn(payload)
+    return {"status": "accepted", "message": "Render job spawned in cloud"}

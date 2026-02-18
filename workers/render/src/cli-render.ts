@@ -119,7 +119,7 @@ async function runRender(jobId: string, userId: string, analysisAssetId: string)
 
         const compositionId = 'LyricVideo';
         // We will mount apps/render to /root/apps/render in Modal
-        const entry = path.resolve(process.cwd(), '../../apps/render/src/index.ts');
+        const entry = path.resolve(process.cwd(), '../../apps/render/src/index.tsx');
 
         console.log(`[${jobId}] Bundling form ${entry}...`);
         const bundled = await bundle(entry);

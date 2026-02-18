@@ -1,6 +1,7 @@
-import React from 'react';
-import { useCurrentFrame, useVideoConfig, Audio, AbsoluteFill, interpolate, spring, Easing, OffthreadVideo } from 'remotion';
-import { VISUAL_PRESETS } from '@repo/shared';
+import React, { useMemo } from 'react';
+import { useCurrentFrame, useVideoConfig, Audio, AbsoluteFill, OffthreadVideo } from 'remotion';
+import { KineticTypography } from './components/KineticTypography';
+import { MotionManifest } from './types/MotionManifest';
 
 interface Word {
   t0: number;
@@ -8,176 +9,139 @@ interface Word {
   w: string;
   conf?: number;
   lang?: string;
-  tw?: string; // Translated word/text
+  tw?: string;
   type?: 'lyric' | 'phrase' | 'caption';
 }
 
-interface Props {
+interface UniversalProps {
   words: Word[];
   audioUrl: string;
-  styleId?: string;
-  mood?: string;
-  position?: 'top' | 'center' | 'bottom';
-  fontSize?: number;
   videoBgUrl?: string;
   hook?: { start: number; end: number };
   energy_flux?: number[];
-  harmonic_key?: string;
-  vocal_brightness?: number;
+  motion_manifest?: MotionManifest;
+  // Legacy props as fallbacks
+  styleId?: string;
+  mood?: string;
+  position?: string;
+  fontSize?: number;
   fontFamily?: string;
   lyricColor?: string;
   lyricOpacity?: number;
   animationEffect?: string;
 }
 
-const SCALING_FACTOR = 3.0; // Ratio 1080 / 360
-
-export const MyComposition: React.FC<Props> = ({
+export const MyComposition: React.FC<UniversalProps> = ({
   words = [],
   audioUrl,
-  styleId = 'tiktok_bold',
-  mood = 'default',
-  position = 'center',
-  fontSize = 6,
   videoBgUrl,
   hook,
   energy_flux = [],
-  harmonic_key = 'C Major',
-  vocal_brightness = 2000,
-  fontFamily,
-  lyricColor,
-  lyricOpacity = 1,
-  animationEffect = 'pop'
+  motion_manifest,
+  // Fallbacks for legacy jobs
+  styleId, position, fontSize, fontFamily, lyricColor, lyricOpacity, animationEffect
 }) => {
   const frame = useCurrentFrame();
-  const { fps, height } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
   const currentTime = frame / fps;
-  const relativeTime = currentTime;
 
-  // 1. NEURAL SYNESTHESIA: Energy Reactivity
-  const currentSecond = Math.floor(relativeTime);
+  // 1. Resolve Motion Manifest (Merge User Constraints if passed as loose props)
+  const manifest: MotionManifest = useMemo(() => {
+    // Default Fallback
+    const base: MotionManifest = motion_manifest || {
+      typography: { fontFamily: fontFamily || 'Inter', fontWeight: 800, fontSize: fontSize || 6, opacity: lyricOpacity ?? 1 },
+      palette: { primary: lyricColor || '#ffffff', secondary: '#cccccc' },
+      layout: { mode: (position as any) || 'center' },
+      kinetics: { reactivity: 1.0, jitter: 0.0, effect: animationEffect || 'fade', physics: 'spring' }
+    };
+
+    // Ensure strict override if props exist (redundancy check)
+    if (fontFamily) base.typography.fontFamily = fontFamily;
+    if (fontSize) base.typography.fontSize = fontSize;
+    if (lyricOpacity !== undefined) base.typography.opacity = lyricOpacity;
+    if (position) base.layout.mode = position as any;
+    if (animationEffect) base.kinetics.effect = animationEffect;
+
+    return base;
+  }, [motion_manifest, fontFamily, fontSize, lyricOpacity, position, animationEffect, lyricColor]);
+
+  // 1a. Dynamic Font Loading
+  // Construct Google Fonts URL. Handles spaces in usage (e.g. "Open Sans" -> "Open+Sans")
+  const fontUrl = `https://fonts.googleapis.com/css2?family=${(manifest.typography.fontFamily || 'Inter').replace(/\s+/g, '+')}:wght@400;700;900&display=swap`;
+
+  // 2. Audio Energy Calculation
+  const currentSecond = Math.floor(currentTime);
   const localEnergy = energy_flux[currentSecond] || 0.5;
   const nextEnergy = energy_flux[currentSecond + 1] || localEnergy;
-  const energyProgress = relativeTime % 1;
+  const energyProgress = currentTime % 1;
   const smoothEnergy = localEnergy * (1 - energyProgress) + nextEnergy * energyProgress;
 
-  // Kinetic Typography FX
-  const reactiveScale = 1 + (smoothEnergy * 0.1);
-  const reactiveBlur = Math.max(0, (1 - smoothEnergy) * 3); // More blur on low energy
-
-  // Find active word or phrase
-  const activeToken = words.find(w => relativeTime >= w.t0 && relativeTime <= w.t1);
-
-  // Resolve Style Preset
-  const style = VISUAL_PRESETS.find((p: any) => p.id === styleId) || VISUAL_PRESETS[0];
-  const finalEffect = animationEffect || style.animation;
-
-  // Entrance Timing (Normalized to frame 0 of word appearance)
+  // 3. Active Word Logic
+  const activeToken = words.find(w => currentTime >= w.t0 && currentTime <= w.t1);
   const t = activeToken ? (frame - (activeToken.t0 * fps)) : 0;
 
-  // --- ANIMATION SUITE ---
-
-  // POP / SPRING
-  const popScale = spring({
-    frame: t,
-    fps,
-    config: { stiffness: 200, damping: 12 }
-  });
-
-  // FADE
-  const opacityFade = interpolate(t, [0, 5], [0, 1], { extrapolateRight: 'clamp' });
-
-  // SLIDE
-  const slideY = interpolate(t, [0, 6], [100 * SCALING_FACTOR, 0], {
-    extrapolateRight: 'clamp',
-    easing: Easing.out(Easing.quad)
-  });
-
-  // SHAKE (Deterministic jitter)
-  const shakeX = (Math.sin(frame * 0.5) * 10 * SCALING_FACTOR) * (localEnergy > 0.8 ? 1 : 0);
-  const shakeY = (Math.cos(frame * 0.7) * 10 * SCALING_FACTOR) * (localEnergy > 0.8 ? 1 : 0);
-
-  // NEON PULSE
-  const neonPulse = 0.9 + Math.sin(frame / 5) * 0.1;
-
-  // POSITIONING
-  const positionOffsets = {
-    top: height * 0.15,
-    center: height * 0.5,
-    bottom: height * 0.85
+  // 4. Layout Calculation
+  const containerStyle: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0
   };
-  const targetY = positionOffsets[position || 'center'];
+
+  if (manifest.layout.mode === 'top') {
+    containerStyle.alignItems = 'flex-start';
+    containerStyle.paddingTop = '15%';
+  } else if (manifest.layout.mode === 'bottom') {
+    containerStyle.alignItems = 'flex-end';
+    containerStyle.paddingBottom = '15%';
+  }
 
   return (
-    <AbsoluteFill className="bg-black overflow-hidden font-sans">
-      {/* Background Layer: OffthreadVideo for zero flickering */}
+    <AbsoluteFill className="bg-black font-sans">
+      <link rel="stylesheet" href={fontUrl} />
+      {/* Background Layer */}
       <AbsoluteFill>
         {videoBgUrl ? (
-          <OffthreadVideo
-            src={videoBgUrl}
-            className="w-full h-full object-cover"
-          />
+          <OffthreadVideo src={videoBgUrl} className="w-full h-full object-cover" />
         ) : (
-          <div
-            className="w-full h-full"
-            style={{
-              background: `radial-gradient(circle at center, ${lyricColor || style.colors[0]}26 0%, #000000 100%)`,
-              opacity: 1
-            }}
-          />
+          <div className="w-full h-full bg-gray-900" />
         )}
       </AbsoluteFill>
 
       <Audio src={audioUrl} startFrom={(hook?.start || 0) * fps} />
 
-      {/* Kinetic Typography Layer */}
-      <AbsoluteFill className="flex items-center justify-center">
+      {/* Global Motion Layer */}
+      <AbsoluteFill style={containerStyle}>
         {activeToken && (
-          <div
-            className="text-center absolute w-full px-32"
-            style={{
-              top: targetY,
-              transform: `translateY(-50%)`,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: fontFamily || style.fontFamily,
-                color: lyricColor || style.colors[0],
-                fontSize: `${fontSize || 6}rem`,
-                fontWeight: 900,
-                textTransform: 'uppercase',
-                display: 'inline-block',
-                lineHeight: 0.85,
-                filter: `blur(${reactiveBlur}px) drop-shadow(0 0 ${20 * SCALING_FACTOR}px ${(lyricColor || style.colors[0])}66)`,
-                opacity: (lyricOpacity ?? 1) * (finalEffect === 'fade' ? opacityFade : 1) * (finalEffect === 'neon' ? neonPulse : 1),
-                transform: `
-                  translateY(${finalEffect === 'slide' ? slideY : 0}px)
-                  translate(${finalEffect === 'shake' ? shakeX : 0}px, ${finalEffect === 'shake' ? shakeY : 0}px)
-                  scale(${finalEffect === 'pop' || finalEffect === 'spring-scale' ? popScale * reactiveScale : reactiveScale})
-                `
-              }}
-            >
-              {activeToken.w}
-
-              {/* Translation (Captions) */}
-              {activeToken.tw && (
-                <div
-                  className="mt-8 opacity-60 font-medium lowercase"
-                  style={{
-                    fontFamily: 'Inter',
-                    fontSize: '0.4em',
-                    color: '#ffffff',
-                    letterSpacing: '-0.02em'
-                  }}
-                >
-                  {activeToken.tw}
-                </div>
-              )}
-            </div>
-          </div>
+          <KineticTypography
+            text={activeToken.w}
+            manifest={manifest}
+            energy={smoothEnergy}
+            t={t}
+            fps={fps}
+          />
         )}
       </AbsoluteFill>
+
+      {/* Subtitles / Translations */}
+      {activeToken?.tw && (
+        <div style={{
+          position: 'absolute',
+          bottom: 100,
+          width: '100%',
+          textAlign: 'center',
+          fontFamily: 'Inter',
+          fontSize: 40,
+          color: 'white',
+          opacity: 0.6
+        }}>
+          {activeToken.tw}
+        </div>
+      )}
     </AbsoluteFill>
   );
 };

@@ -33,11 +33,14 @@ export function CreativeStudio() {
 
     // Creative Controls
     const [prompt, setPrompt] = useState('');
-    const [selectedStyleId, setSelectedStyleId] = useState('tiktok_bold');
+    const [selectedStyleId, setSelectedStyleId] = useState(''); // '' = Auto (AI chooses based on prompt+music)
+    const [customStyle, setCustomStyle] = useState('');
     const [targetLanguage, setTargetLanguage] = useState('');
     const [fontSize, setFontSize] = useState(6); // rem
     const [position, setPosition] = useState<'top' | 'center' | 'bottom'>('center');
     const [fontFamily, setFontFamily] = useState('Outfit');
+    const [videoTitle, setVideoTitle] = useState('');
+    const [titleFontFamily, setTitleFontFamily] = useState('Syne');
     const [animationEffect, setAnimationEffect] = useState('fade');
     const [lyricColor, setLyricColor] = useState('#ffffff');
     const [lyricOpacity, setLyricOpacity] = useState(1);
@@ -64,7 +67,7 @@ export function CreativeStudio() {
         { id: 'pt', name: 'Portugués' }
     ];
 
-    const selectedStyle = VISUAL_PRESETS.find(s => s.id === selectedStyleId) || VISUAL_PRESETS[0];
+    const selectedStyle = selectedStyleId ? VISUAL_PRESETS.find(s => s.id === selectedStyleId) : null;
 
     useEffect(() => {
         if (selectedStyle) {
@@ -134,13 +137,15 @@ export function CreativeStudio() {
                     title: file.name,
                     audioUrl: assetPath,
                     prompt: prompt,
-                    styleId: selectedStyleId,
+                    styleId: customStyle || selectedStyleId || undefined, // Prioritize custom text
                     targetLanguage: targetLanguage || undefined,
                     startTime: timeRange[0],
                     endTime: timeRange[1],
                     position: position,
                     fontSize: fontSize,
                     fontFamily: fontFamily,
+                    videoTitle: videoTitle || file.name.split('.')[0],
+                    titleFontFamily: titleFontFamily,
                     animationEffect: animationEffect,
                     lyricColor: lyricColor,
                     lyricOpacity: lyricOpacity
@@ -338,6 +343,101 @@ export function CreativeStudio() {
                                             {LANGUAGES.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
                                         </select>
                                     </div>
+
+                                    {/* Video Title Input */}
+                                    <div className="space-y-4 pt-4 border-t border-white/5">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-8 h-8 rounded-full bg-indigo-500/10 flex items-center justify-center">
+                                                <Smartphone className="w-4 h-4 text-indigo-400" />
+                                            </div>
+                                            <h3 className="text-sm font-black uppercase tracking-widest text-white/90">Main Title Overlay</h3>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            value={videoTitle}
+                                            onChange={(e) => setVideoTitle(e.target.value)}
+                                            placeholder="Enter Video Title (e.g. Song Name)"
+                                            className="w-full bg-black border border-white/[0.03] rounded-2xl px-6 py-4 text-sm text-white focus:outline-none focus:border-indigo-500/30 transition-all"
+                                        />
+
+                                        <div className="space-y-2">
+                                            <span className="text-[10px] font-black uppercase tracking-widest text-white/20 px-1">Title Typography</span>
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                                {['Syne', 'Anton', 'Unbounded', 'Bebas Neue', 'Righteous', 'Michroma'].map((f) => (
+                                                    <button
+                                                        key={f}
+                                                        onClick={() => setTitleFontFamily(f)}
+                                                        className={cn(
+                                                            "py-3 px-4 rounded-xl border text-[9px] font-black uppercase tracking-[0.1em] transition-all duration-300 text-left truncate",
+                                                            titleFontFamily === f ? "bg-indigo-500 border-indigo-400 text-white" : "bg-black/50 border-white/[0.03] text-white/20 hover:border-white/10"
+                                                        )}
+                                                    >
+                                                        {f}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Visual Style (Optional) */}
+                                <div className="p-8 rounded-[56px] bg-zinc-900/50 border border-white/[0.03] space-y-6">
+                                    <div className="flex items-center gap-3">
+                                        <div className="w-8 h-8 rounded-full bg-cyan-500/10 flex items-center justify-center">
+                                            <Sparkles className="w-4 h-4 text-cyan-400" />
+                                        </div>
+                                        <h3 className="text-sm font-black uppercase tracking-widest text-white/90">Visual Style</h3>
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-white/20 ml-auto">Opcional</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                        {/* Auto option */}
+                                        <button
+                                            onClick={() => setSelectedStyleId('')}
+                                            className={cn(
+                                                "py-4 px-5 rounded-2xl border text-[10px] font-black uppercase tracking-[0.1em] transition-all duration-300 text-left",
+                                                selectedStyleId === ''
+                                                    ? "bg-gradient-to-r from-purple-500/20 to-cyan-500/20 border-purple-500/30 text-white shadow-lg"
+                                                    : "bg-black/50 border-white/[0.03] text-white/20 hover:border-white/10"
+                                            )}
+                                        >
+                                            <span className="flex items-center gap-2">
+                                                <Wand2 className="w-3 h-3" />
+                                                Auto (IA)
+                                            </span>
+                                        </button>
+                                        {VISUAL_PRESETS.map((s) => (
+                                            <button
+                                                key={s.id}
+                                                onClick={() => setSelectedStyleId(s.id)}
+                                                className={cn(
+                                                    "py-4 px-5 rounded-2xl border text-[10px] font-black uppercase tracking-[0.1em] transition-all duration-300 text-left truncate",
+                                                    selectedStyleId === s.id
+                                                        ? "bg-white border-white text-black"
+                                                        : "bg-black/50 border-white/[0.03] text-white/20 hover:border-white/10"
+                                                )}
+                                            >
+                                                <span className="flex items-center gap-2">
+                                                    <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: `linear-gradient(135deg, ${s.colors[0]}, ${s.colors[1]})` }} />
+                                                    {s.name}
+                                                </span>
+                                            </button>
+                                        ))}
+                                    </div>
+
+                                    {/* Custom Style Text Input */}
+                                    <div className="space-y-4 pt-4 border-t border-white/5">
+                                        <div className="flex justify-between items-center px-1">
+                                            <span className="text-[10px] font-black uppercase tracking-widest text-white/20">Custom Artistic Movement</span>
+                                            <span className="text-[8px] font-bold uppercase tracking-widest text-white/5">Overrides presets</span>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            value={customStyle}
+                                            onChange={(e) => setCustomStyle(e.target.value)}
+                                            placeholder="e.g. Cyber-Punk Baroque, Wes Anderson style, etc."
+                                            className="w-full bg-black border border-white/[0.03] rounded-2xl px-6 py-4 text-sm text-white focus:outline-none focus:border-cyan-500/30 transition-all"
+                                        />
+                                    </div>
                                 </div>
 
                                 {/* Lyrical Geometry (Size & Position) */}
@@ -463,7 +563,9 @@ export function CreativeStudio() {
                                                 {[
                                                     'Outfit', 'Inter', 'Montserrat', 'Syne',
                                                     'Anton', 'Bebas Neue', 'Unbounded',
-                                                    'Space Grotesk', 'Playfair Display'
+                                                    'Space Grotesk', 'Playfair Display',
+                                                    'Righteous', 'Permanent Marker', 'Lobster',
+                                                    'Cinzel', 'Michroma', 'Quicksand'
                                                 ].map((f) => (
                                                     <button
                                                         key={f}
@@ -472,7 +574,7 @@ export function CreativeStudio() {
                                                             "py-4 px-6 rounded-2xl border text-[10px] font-black uppercase tracking-[0.1em] transition-all duration-300 text-left truncate",
                                                             fontFamily === f ? "bg-white border-white text-black" : "bg-black/50 border-white/[0.03] text-white/20 hover:border-white/10"
                                                         )}
-                                                        style={{ fontFamily: f.toLowerCase().replace(' ', '-') }}
+                                                        style={{ fontFamily: f.toLowerCase().replace(/\s+/g, '-') }}
                                                     >
                                                         {f}
                                                     </button>
@@ -484,7 +586,7 @@ export function CreativeStudio() {
                                         <div className="space-y-4">
                                             <span className="text-[10px] font-black uppercase tracking-widest text-white/20 px-1">Entrance Kinetic</span>
                                             <div className="grid grid-cols-2 gap-2">
-                                                {['fade', 'pop', 'slide', 'glitch', 'neon', 'shake', 'kinetic', 'typewriter'].map((a) => (
+                                                {['fade', 'pop', 'slide', 'typewriter', 'glitch', 'neon', 'shake', 'kinetic'].map((a) => (
                                                     <button
                                                         key={a}
                                                         onClick={() => setAnimationEffect(a)}
@@ -615,6 +717,6 @@ export function CreativeStudio() {
                     )}
                 </div>
             </div>
-        </div>
+        </div >
     );
 }

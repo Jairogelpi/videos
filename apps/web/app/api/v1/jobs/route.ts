@@ -44,7 +44,8 @@ export async function POST(request: NextRequest) {
             title, inputAudioAssetId, projectId: bodyProjectId, mood,
             styleId: bodyStyleId, prompt, position, startTime, endTime,
             targetLanguage, audioUrl, fontSize, fontFamily,
-            animationEffect, lyricColor, lyricOpacity
+            animationEffect, lyricColor, lyricOpacity,
+            videoTitle, titleFontFamily
         } = body;
 
         // Resolve project: use provided or find user's default project
@@ -60,26 +61,15 @@ export async function POST(request: NextRequest) {
             projectId = defaultProject?.id || null;
         }
 
-        // AI STYLE SELECTION: Resolve Prompt to Style if provided (Mirroring Fastify logic)
+        // AI STYLE SELECTION: Only auto-resolve if NO style was explicitly chosen
         let styleId = bodyStyleId;
-        if (prompt) {
-            console.log(`[JobOrchestrator] Resolving prompt: "${prompt}"`);
-            const words = prompt.toLowerCase().split(/\s+/);
-            let bestStyle = VISUAL_PRESETS[0];
-            let maxScore = -1;
-            for (const style of VISUAL_PRESETS) {
-                let score = 0;
-                for (const word of words) {
-                    if (style.tags.includes(word)) score += 2;
-                    if (style.name.toLowerCase().includes(word)) score += 1;
-                }
-                if (score > maxScore) {
-                    maxScore = score;
-                    bestStyle = style;
-                }
-            }
-            styleId = bestStyle.id;
-            console.log(`[JobOrchestrator] Resolved to style: ${styleId}`);
+        if (!styleId && prompt) {
+            console.log(`[JobOrchestrator] No style selected. Auto-resolving from prompt: "${prompt}"`);
+            // styleId is already undefined if not provided. Let it be passed as such to the worker.
+            // WORKER LOGIC handles undefined style by using the AI Director (Gemini) to determine style from context.
+            console.log(`[JobOrchestrator] No style selected. Passing 'Auto' (undefined) to worker.`);
+        } else if (styleId) {
+            console.log(`[JobOrchestrator] Using user-selected style: ${styleId}`);
         }
 
         // 0. CREATE ASSET RECORD if audioUrl is provided but no ID
@@ -115,7 +105,8 @@ export async function POST(request: NextRequest) {
                 metadata: {
                     mood, styleId, position, startTime, endTime,
                     targetLanguage, fontSize, prompt, fontFamily,
-                    animationEffect, lyricColor, lyricOpacity
+                    animationEffect, lyricColor, lyricOpacity,
+                    videoTitle, titleFontFamily
                 }
             })
             .select()
@@ -135,10 +126,18 @@ export async function POST(request: NextRequest) {
                 const origin = request.nextUrl.origin;
                 const modalPayload = {
                     job_id: job.id,
-                    asset_id: resolvedAudioId, // We might need to resolve the path if Modal expects it
+                    asset_id: resolvedAudioId,
                     user_id: userId,
                     prompt: prompt || mood || "Creative visualization",
-                    style: styleId || "cinematic",
+                    style: styleId, // undefined if Auto
+                    fontFamily,
+                    animationEffect,
+                    lyricOpacity,
+                    position,
+                    fontSize,
+                    targetLanguage,
+                    video_title: videoTitle,
+                    title_font_family: titleFontFamily,
                     callback_url: `${origin}/api/v1/internal/workers/callback`
                 };
 
