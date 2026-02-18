@@ -1222,6 +1222,8 @@ async def process_job(job, job_token, parallel_generator=None):
     lyric_opacity = job.data.get('lyricOpacity')
     video_title = job.data.get('videoTitle')
     title_font_family = job.data.get('titleFontFamily')
+    lyric_color = job.data.get('lyricColor', '#ffffff')
+    style_id = job.data.get('style') # Extracted from 'style' as per route.ts
     
     # Cap duration to 60s as per requirements
     if end_time - start_time > 60:

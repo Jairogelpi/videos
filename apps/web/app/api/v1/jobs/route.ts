@@ -138,6 +138,7 @@ export async function POST(request: NextRequest) {
                     targetLanguage,
                     video_title: videoTitle,
                     title_font_family: titleFontFamily,
+                    lyricColor,
                     callback_url: `${origin}/api/v1/internal/workers/callback`
                 };
 
