@@ -532,34 +532,36 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-headers = {
-    "Authorization": f"Bearer {CALLBACK_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-def report_stage(job_id: str, status: str, progress: int, user_id: str = None, metrics: Dict[str, Any] = None):
+def safe_callback(job_id: str, data: Dict[str, Any]):
+    """
+    Unified callback handler with safety checks for cloud environments.
+    Prevents "Connection Refused" errors when workers attempt to callback to localhost.
+    """
     try:
         if not CALLBACK_URL or "127.0.0.1" in CALLBACK_URL or "localhost" in CALLBACK_URL:
             # Special check: If running in Modal, localhost is guaranteed to fail if the backend is local.
-            print(f"[{job_id}] ⚠️ Skipping callback to local/missing URL: {CALLBACK_URL}. (Use PUBLIC_CALLBACK_URL for remote workers)")
-            return
+            print(f"[{job_id}] ⚠️ Skipping callback to local/missing URL: {CALLBACK_URL}. (Define PUBLIC_CALLBACK_URL in your cloud provider settings)")
+            return None
 
-        data = {
-            "jobId": job_id,
-            "userId": user_id,
-            "event": "stage",
-            "status": status,
-            "progress": progress
-        }
-        if metrics:
-            data["metrics"] = metrics
         resp = requests.post(CALLBACK_URL, headers=headers, json=data)
         if resp.status_code != 200:
             print(f"[{job_id}] Callback failed with {resp.status_code}: {resp.text}")
-        else:
-            print(f"[{job_id}] Stage {status} ({progress}%) reported.")
+        return resp
     except Exception as e:
-        print(f"[{job_id}] Failed to report stage {status}: {e}")
+        print(f"[{job_id}] Callback skipping (Connectivity Error): {e}")
+        return None
+
+def report_stage(job_id: str, status: str, progress: int, user_id: str = None, metrics: Dict[str, Any] = None):
+    data = {
+        "jobId": job_id,
+        "userId": user_id,
+        "event": "stage",
+        "status": status,
+        "progress": progress
+    }
+    if metrics:
+        data["metrics"] = metrics
+    return safe_callback(job_id, data)
 
 def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float, max_scenes: int = 4, job_id: str = "") -> List[float]:
     """
@@ -1637,19 +1639,14 @@ async def process_job(job, job_token, parallel_generator=None):
             storage_path = video_bg_url
             
             # Report Asset to API
-            try:
-                resp_v = requests.post(CALLBACK_URL, headers=headers, json={
-                    "jobId": job_id,
-                    "userId": user_id,
-                    "event": "asset",
-                    "kind": "cinematic_bg",
-                    "url": storage_path, 
-                    "metadata": {"precision": "high-demucs-v3", "size_mb": round(video_file_size / (1024*1024), 2)}
-                })
-                if resp_v.status_code != 200:
-                    print(f"[{job_id}] Cinematic BG asset callback failed: {resp_v.text}")
-            except Exception as e:
-                print(f"[{job_id}] Cinematic BG asset callback skipped (Connectivity Error): {e}")
+            safe_callback(job_id, {
+                "jobId": job_id,
+                "userId": user_id,
+                "event": "asset",
+                "kind": "cinematic_bg",
+                "url": storage_path, 
+                "metadata": {"precision": "high-demucs-v3", "size_mb": round(video_file_size / (1024*1024), 2)}
+            })
 
             # 3. Upload vocal stem (if not already done)
             vocal_path_storage = f"{user_id}/{job_id}_vocals.wav"
@@ -1663,19 +1660,14 @@ async def process_job(job, job_token, parallel_generator=None):
                 )
 
             # Report Asset to API
-            try:
-                resp_v = requests.post(CALLBACK_URL, headers=headers, json={
-                    "jobId": job_id,
-                    "userId": user_id,
-                    "event": "asset",
-                    "kind": "vocal_stem",
-                    "url": vocal_path_storage, 
-                    "metadata": {"precision": "high-demucs-v3"}
-                })
-                if resp_v.status_code != 200:
-                    print(f"[{job_id}] Vocal asset callback failed: {resp_v.text}")
-            except Exception as e:
-                print(f"[{job_id}] Vocal asset callback skipped (Connectivity Error): {e}")
+            safe_callback(job_id, {
+                "jobId": job_id,
+                "userId": user_id,
+                "event": "asset",
+                "kind": "vocal_stem",
+                "url": vocal_path_storage, 
+                "metadata": {"precision": "high-demucs-v3"}
+            })
 
             with open(local_analysis_file, "w") as f:
                 json.dump(analysis_data, f)
@@ -1690,19 +1682,14 @@ async def process_job(job, job_token, parallel_generator=None):
             )
 
             # Report Asset to API
-            try:
-                resp_a = requests.post(CALLBACK_URL, headers=headers, json={
-                    "jobId": job_id,
-                    "userId": user_id,
-                    "event": "asset",
-                    "kind": "analysis_json",
-                    "url": analysis_path,
-                    "metadata": {"segments_count": len(result["segments"]), "precision": "high-demucs-v3"}
-                })
-                if resp_a.status_code != 200:
-                    print(f"[{job_id}] Analysis asset callback failed: {resp_a.text}")
-            except Exception as e:
-                print(f"[{job_id}] Analysis asset callback skipped (Connectivity Error): {e}")
+            safe_callback(job_id, {
+                "jobId": job_id,
+                "userId": user_id,
+                "event": "asset",
+                "kind": "analysis_json",
+                "url": analysis_path,
+                "metadata": {"segments_count": len(result["segments"]), "precision": "high-demucs-v3"}
+            })
 
             # 6. Success
             # 6. Handover to Render Worker (Do not mark as completed yet)
@@ -1713,7 +1700,7 @@ async def process_job(job, job_token, parallel_generator=None):
             import traceback
             error_msg = traceback.format_exc()
             print(f"[{job_id}] Critical Error: {error_msg}")
-            requests.post(CALLBACK_URL, headers=headers, json={
+            safe_callback(job_id, {
                 "jobId": job_id,
                 "userId": user_id,
                 "event": "error",
