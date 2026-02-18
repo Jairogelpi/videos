@@ -1198,7 +1198,10 @@ async def generate_video_background(
         with open(final_video_with_audio_path, "rb") as f:
             supabase.storage.from_("assets").upload(path=storage_path, file=f, file_options={"content-type": "video/mp4", "x-upsert": "true"})
         
-        return storage_path
+        file_size = os.path.getsize(final_video_with_audio_path)
+        print(f"[{job_id}] Final Video Size: {file_size / (1024*1024):.2f} MB")
+        
+        return storage_path, file_size
 
     except Exception as e:
         print(f"[{job_id}] Narrative Engine failed: {e}")
@@ -1570,10 +1573,10 @@ async def process_job(job, job_token, parallel_generator=None):
             report_stage(job_id, "compositing", 85, user_id)
             lyrics_full = " ".join([w["w"] for w in final_words])
             # Pass local_audio_path (the pre-cropped segment) to preserve audio fidelity
-            video_bg_url = await generate_video_background(
+            video_bg_url, video_file_size = await generate_video_background(
                 job_id, user_id, local_audio_path, bg_prompt, 
                 start_time, end_time, final_words,
-                style_id=None, font_family=font_family, 
+                style_id=style_id, font_family=font_family, 
                 animation_effect=animation_effect, 
                 lyric_opacity=lyric_opacity, 
                 position=position, 
@@ -1618,21 +1621,9 @@ async def process_job(job, job_token, parallel_generator=None):
             }
             
             local_analysis_file = os.path.join(tmp_dir, "analysis.json")
-            # 3. Upload to Supabase Storage (with upsert)
-            storage_path = f"{job_id}/cinematic_bg.mp4"
-            print(f"[{job_id}] Uploading background video to assets/{storage_path}...")
+            # Cinematic BG already uploaded in generate_video_background
+            storage_path = video_bg_url
             
-            # Size check logging
-            file_size = os.path.getsize(final_video_with_audio_path)
-            print(f"[{job_id}] Final Video Size: {file_size / (1024*1024):.2f} MB")
-            
-            with open(final_video_with_audio_path, "rb") as f:
-                supabase.storage.from_("assets").upload(
-                    path=storage_path,
-                    file=f,
-                    file_options={"content-type": "video/mp4", "x-upsert": "true"}
-                )
-
             # Report Asset to API
             try:
                 resp_v = requests.post(CALLBACK_URL, headers=headers, json={
@@ -1641,7 +1632,7 @@ async def process_job(job, job_token, parallel_generator=None):
                     "event": "asset",
                     "kind": "cinematic_bg",
                     "url": storage_path, 
-                    "metadata": {"precision": "high-demucs-v3"}
+                    "metadata": {"precision": "high-demucs-v3", "size_mb": round(video_file_size / (1024*1024), 2)}
                 })
                 if resp_v.status_code != 200:
                     print(f"[{job_id}] Cinematic BG asset callback failed: {resp_v.text}")
