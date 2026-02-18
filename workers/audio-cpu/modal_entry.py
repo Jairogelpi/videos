@@ -70,7 +70,7 @@ secrets = [
 
 
 @app.cls(
-    gpu="A100",  # Zero-Brakes: High-VRAM for max speed
+    gpu="L4",  # Value-First: Significantly cheaper than A100 (~70% savings)
     timeout=900,
     secrets=secrets,
     volumes={"/models": models_volume},

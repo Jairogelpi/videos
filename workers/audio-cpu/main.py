@@ -568,89 +568,65 @@ def report_stage(job_id: str, status: str, progress: int, user_id: str = None, m
         data["metrics"] = metrics
     return safe_callback(job_id, data)
 
-def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float, max_scenes: int = 4, job_id: str = "") -> List[float]:
+def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float, max_scenes_limit: int = 8, job_id: str = "") -> List[float]:
     """
-    Beat-Sync Engine: Computes optimal scene cut timestamps aligned to musical beats.
-    
-    Algorithm:
-    1. Get all beat positions and peak moments from the profiler
-    2. Score each beat by proximity to energy peaks (prefer cuts near climax moments)
-    3. Select top N-1 beats as cut points, enforcing a minimum scene length
-    4. Return a list of scene durations (summing to total_duration)
+    Intelligent Narrative Engine: Decides scene count and durations based on musical peaks.
     """
     beat_positions = audio_profile.get("beatPositions", [])
     peak_moments = audio_profile.get("peakMoments", [])
-    energy_series = audio_profile.get("energySeries", [])
     
-    # If no beat data, fall back to uniform
-    if not beat_positions or len(beat_positions) < max_scenes:
-        print(f"[{job_id}] Beat-Sync: Insufficient beat data ({len(beat_positions)} beats). Uniform fallback.")
-        uniform = total_duration / max_scenes
-        return [uniform] * max_scenes
+    # 1. Primary Candidates: Musical climaxes (peaks)
+    # We want at least 4s between cuts to give the AI/WAN enough time to establish presence
+    MIN_SCENE_DUR = 5.0 
+    MAX_SCENE_DUR = 15.0
     
-    # Filter beats within our duration window (leave margin at edges)
-    valid_beats = [b for b in beat_positions if 0.5 < b < (total_duration - 0.5)]
+    # Filter/Select cut points based on peaks
+    potential_cuts = sorted([p for p in peak_moments if 1.0 < p < (total_duration - 1.0)])
     
-    if len(valid_beats) < max_scenes - 1:
-        print(f"[{job_id}] Beat-Sync: Not enough valid beats in window. Uniform fallback.")
-        uniform = total_duration / max_scenes
-        return [uniform] * max_scenes
+    intelligent_cuts = []
+    last_cut = 0.0
     
-    min_scene_length = max(1.0, total_duration / (max_scenes * 2))
+    for p in potential_cuts:
+        if (p - last_cut) >= MIN_SCENE_DUR:
+            # Snap peak to nearest beat for rhythmic perfection
+            nearest_beat = min(beat_positions, key=lambda b: abs(b - p)) if beat_positions else p
+            snap_cut = nearest_beat if abs(nearest_beat - p) < 0.5 else p
+            
+            if (snap_cut - last_cut) >= MIN_SCENE_DUR:
+                intelligent_cuts.append(snap_cut)
+                last_cut = snap_cut
     
-    # Score each beat: higher = better cut point
-    beat_scores = []
-    for beat_t in valid_beats:
-        score = 0.0
-        
-        # Proximity to peak moments (exponential decay)
-        for peak_t in peak_moments:
-            dist = abs(beat_t - peak_t)
-            score += math.exp(-dist * 2.0)
-        
-        # Energy gradient: prefer cuts where energy is changing direction
-        if energy_series:
-            energy_idx = min(int(beat_t), len(energy_series) - 1)
-            if 0 < energy_idx < len(energy_series) - 1:
-                gradient = abs(energy_series[energy_idx + 1] - energy_series[energy_idx - 1])
-                score += gradient * 3.0
-        
-        # Spread bonus: prefer beats near ideal uniform positions
-        ideal_spacing = total_duration / max_scenes
-        nearest_ideal = min(abs(beat_t - (ideal_spacing * k)) for k in range(1, max_scenes))
-        score += max(0, 1.0 - nearest_ideal / ideal_spacing)
-        
-        beat_scores.append((beat_t, score))
+    # 2. Fill gaps: If a scene is too long (>MAX), find midpoints on beats
+    final_cuts = []
+    last_v = 0.0
+    for c in (intelligent_cuts + [total_duration]):
+        gap = c - last_v
+        if gap > MAX_SCENE_DUR:
+            # Split the gap
+            num_splits = math.ceil(gap / MAX_SCENE_DUR)
+            for s in range(1, num_splits):
+                mid = last_v + (s * (gap / num_splits))
+                # Try to find a beat near mid
+                nearest_b = min(beat_positions, key=lambda b: abs(b - mid)) if beat_positions else mid
+                final_cuts.append(nearest_b)
+        if c < total_duration:
+            final_cuts.append(c)
+        last_v = c
+
+    final_cuts = sorted(list(set([round(x, 2) for x in final_cuts])))
     
-    # Sort by score descending
-    beat_scores.sort(key=lambda x: x[1], reverse=True)
-    
-    # Greedily pick the best N-1 cut points with minimum spacing
-    cut_points = []
-    for beat_t, score in beat_scores:
-        if len(cut_points) >= max_scenes - 1:
-            break
-        too_close = any(abs(beat_t - ex) < min_scene_length for ex in cut_points)
-        if beat_t < min_scene_length or (total_duration - beat_t) < min_scene_length:
-            too_close = True
-        if not too_close:
-            cut_points.append(beat_t)
-    
-    cut_points.sort()
-    
-    # Fill remaining cuts with midpoints of largest gaps
-    while len(cut_points) < max_scenes - 1:
-        boundaries = [0.0] + cut_points + [total_duration]
-        gaps = [(boundaries[i+1] - boundaries[i], i) for i in range(len(boundaries)-1)]
-        gaps.sort(reverse=True)
-        mid = (boundaries[gaps[0][1]] + boundaries[gaps[0][1] + 1]) / 2
-        cut_points.append(mid)
-        cut_points.sort()
-    
+    # 3. Final Limits: Cap total scenes to prevent compute runaway
+    if len(final_cuts) >= max_scenes_limit:
+        final_cuts = final_cuts[:max_scenes_limit-1]
+
     # Convert to scene durations
-    all_boundaries = [0.0] + cut_points + [total_duration]
-    scene_durations = [all_boundaries[i+1] - all_boundaries[i] for i in range(len(all_boundaries)-1)]
+    all_boundaries = [0.0] + final_cuts + [total_duration]
+    scene_durations = [round(all_boundaries[i+1] - all_boundaries[i], 2) for i in range(len(all_boundaries)-1)]
     
+    # Safety: ensure no scene is TOO small (FFmpeg/WAN crash risk)
+    scene_durations = [max(1.5, d) for d in scene_durations]
+    
+    print(f"[{job_id}] Intelligent Segmentation: Created {len(scene_durations)} scenes based on musical narrative.")
     return scene_durations
 
 def compute_segment_moods(audio_path: str, scene_durations: List[float], job_id: str = "") -> List[Dict[str, Any]]:
@@ -794,6 +770,7 @@ def compute_segment_moods(audio_path: str, scene_durations: List[float], job_id:
     
     return segment_moods
 
+
 def synthesize_audio_narrative(profile: Dict[str, Any]) -> str:
     """
     Converts raw audio metrics into a cinematic natural language summary
@@ -931,7 +908,7 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
         width=720,
         height=1280,
         num_frames=17,
-        num_inference_steps=30, 
+        num_inference_steps=15, # Optimized: 15 steps is the "sweet spot" for L4 GPUs
         guidance_scale=5.0
     )
     frames = output.frames[0]
@@ -992,7 +969,10 @@ async def generate_video_background(
             print(f"[{job_id}] Warning: audio_profile not provided to generate_video_background. Computing now.")
             audio_profile = profile_audio(audio_path)
 
-        scene_durations = compute_beat_sync_cuts(audio_profile, duration, max_scenes=4, job_id=job_id)
+        target_scenes = max(4, math.ceil(duration / 15.0))
+        print(f"[{job_id}] Dynamic Scene Target: {target_scenes} scenes for {duration:.1f}s")
+        
+        scene_durations = compute_beat_sync_cuts(audio_profile, duration, max_scenes_limit=target_scenes, job_id=job_id)
         num_clips = len(scene_durations)
         
         # 2. PER-SEGMENT MOOD ANALYSIS
@@ -1011,13 +991,14 @@ async def generate_video_background(
             f"You are a VISIONARY FILM AUTEUR (think Tarkovsky, Kubrick, Jodorowsky) creating a high-concept music video.\n"
             f"SONG DNA:\n"
             f"- MOOD: {audio_mood.upper()}\n"
-            f"- KEY: {harmonic_key}\n"
-            f"- TEMPO: {tempo} BPM\n"
+            f"- NARRATIVE SUMMARY: {audio_narrative}\n"
             f"- USER VISUAL THEME: '{bg_prompt}'\n"
             f"- USER ARTISTIC STYLE: '{style_id or 'Director Choice'}'\n"
+            f"- TOTAL SCENES: {num_clips} (Precisely aligned to musical transitions)\n"
             f"- LYRICS: {full_lyrics[:2000]}\n\n"
-            f"TASK: Create a 'Cinematic Universe Blueprint' that ELEVATES the song.\n"
-            f"CRITICAL: Do NOT be literal. If the lyrics say 'I'm walking', show a journey through a nebula, not a sidewalk.\n"
+            f"TASK: Create a 'Cinematic Universe Blueprint' for a {num_clips}-scene visual masterpiece.\n"
+            f"CRITICAL: Do NOT be literal. The scene transitions were calculated to hit MUSICAL PEAKS. "
+            f"Your narrative must build tension and release in sync with the song's energy.\n"
             f"The video must be a cohesive, dream-like visual journey, not a series of stock clips.\n"
             f"Include:\n"
             f"1. 'protagonist': A SURREAL character consistent with the USER STYLE.\n"
@@ -1140,13 +1121,9 @@ async def generate_video_background(
         # We fade [0:v] and [1:v] -> v1
         # v1 and [2:v] -> v2 ...
         
-        offset = 0
-        # Calculate offsets based on durations. 
-        # Assuming ~4s per clip (minus transition overlap).
-        prev_offset = 0
-        
-        # Hardcoded transition duration
-        TR_DUR = 0.75 
+        # Narrative transition duration (semi-dynamic based on tempo)
+        tempo = audio_profile.get("tempo", 120)
+        TR_DUR = 1.0 if tempo < 100 else 0.75
         
         if len(clip_paths) > 1:
             # Prepare inputs (just labels)
@@ -1155,15 +1132,6 @@ async def generate_video_background(
                 filter_complex += f"[{i}:v]setsar=1[v{i}];"
                 
             # Chain
-            # First overlap starts at: duration_of_first_clip - TR_DUR
-            # tailored for the specific clip lengths.
-            # However, we don't know exact durations without probing. 
-            # Wan output is fixed frame count? Yes, 17 frames @ 16fps ~ 1.06s? 
-            # Wait, we interpolated to ~4s?
-            # Let's assume the generated clips are exactly what we asked for: `scene_dur`
-            # But `parallel_generator` returned file paths. We should probe them or trust `scene_durations`.
-            
-            # Let's trust scene_durations for the math.
             curr_offset = 0
             for i in range(len(clip_paths) - 1):
                 seg_dur = scene_durations[i]
