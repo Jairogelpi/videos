@@ -1648,7 +1648,7 @@ async def process_job(job, job_token, parallel_generator=None):
                 "jobId": job_id,
                 "userId": user_id,
                 "event": "asset",
-                "kind": "cinematic_bg",
+                "kind": "draft_video", 
                 "url": storage_path, 
                 "metadata": {"precision": "high-demucs-v3", "size_mb": round(video_file_size / (1024*1024), 2)}
             })

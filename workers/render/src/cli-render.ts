@@ -71,9 +71,20 @@ async function runRender(jobId: string, userId: string, analysisAssetId: string)
     try {
         await reportSync(jobId, 'stage', { status: 'compositing', progress: 10 }, userId);
 
-        // 1. Download Analysis JSON
-        const { data: assetData } = await supabase.from('job_assets').select('*').eq('id', analysisAssetId).single();
-        if (!assetData) throw new Error(`Analysis asset ${analysisAssetId} not found`);
+        // 1. Find and Download Analysis JSON
+        const { data: assetData, error: assetError } = await supabase
+            .from('job_assets')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('kind', 'analysis_json')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (!assetData || assetError) {
+            console.error(`[${jobId}] Analysis JSON Not Found. Looking for fallback or waiting...`);
+            throw new Error(`Analysis asset for job ${jobId} not found`);
+        }
 
         const { data: fileData, error: downloadError } = await supabase.storage.from('assets').download(assetData.path);
         if (downloadError || !fileData) {

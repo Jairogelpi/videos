@@ -88,6 +88,11 @@ export async function POST(request: NextRequest) {
                     status: 'completed',
                     progress: 100
                 }).eq('id', jobId);
+            } else if (kind === 'analysis_json') {
+                // Also update the job's analysis_json_asset_id
+                await supabase.from('jobs').update({
+                    analysis_json_asset_id: asset.id
+                }).eq('id', jobId);
             }
 
         } else if (event === 'error') {
