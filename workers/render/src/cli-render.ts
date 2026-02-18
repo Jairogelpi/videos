@@ -99,7 +99,9 @@ async function runRender(jobId: string, userId: string, analysisAssetId: string)
             fontFamily: analysisJson.fontFamily,
             animationEffect: analysisJson.animationEffect,
             lyricColor: analysisJson.lyricColor,
-            lyricOpacity: analysisJson.lyricOpacity
+            lyricOpacity: analysisJson.lyricOpacity,
+            videoTitle: analysisJson.videoTitle,
+            titleFontFamily: analysisJson.titleFontFamily
         };
 
         // 2. Render Video

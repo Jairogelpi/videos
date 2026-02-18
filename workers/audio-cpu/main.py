@@ -1601,6 +1601,8 @@ async def process_job(job, job_token, parallel_generator=None):
                 "mood": mood, "position": position, 
                 "fontSize": font_size,
                 "fontFamily": font_family,
+                "styleId": style_id,
+                "position": position,
                 "videoTitle": video_title,
                 "titleFontFamily": title_font_family,
                 "animationEffect": animation_effect, "lyricColor": lyric_color,
