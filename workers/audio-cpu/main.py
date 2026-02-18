@@ -25,7 +25,7 @@ import asyncio
 import requests
 import tempfile
 import subprocess
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import numpy as np
 import librosa
 from scipy.signal import correlate
