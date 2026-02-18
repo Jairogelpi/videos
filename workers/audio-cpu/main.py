@@ -532,6 +532,11 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+headers = {
+    "Authorization": f"Bearer {CALLBACK_TOKEN}",
+    "Content-Type": "application/json"
+}
+
 def safe_callback(job_id: str, data: Dict[str, Any]):
     """
     Unified callback handler with safety checks for cloud environments.
