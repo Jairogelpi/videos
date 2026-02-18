@@ -1220,8 +1220,8 @@ async def process_job(job, job_token, parallel_generator=None):
     font_family = job.data.get('fontFamily')
     animation_effect = job.data.get('animationEffect')
     lyric_opacity = job.data.get('lyricOpacity')
-    video_title = job.data.get('videoTitle')
-    title_font_family = job.data.get('titleFontFamily')
+    video_title = job.data.get('video_title')
+    title_font_family = job.data.get('title_font_family')
     lyric_color = job.data.get('lyricColor', '#ffffff')
     style_id = job.data.get('style') # Extracted from 'style' as per route.ts
     
@@ -1418,14 +1418,16 @@ async def process_job(job, job_token, parallel_generator=None):
                 if lyric_opacity: motion_manifest["typography"]["opacity"] = lyric_opacity
                 if position: motion_manifest.setdefault("layout", {})["mode"] = position
                 if animation_effect: motion_manifest.setdefault("kinetics", {})["effect"] = animation_effect
+                if lyric_color: motion_manifest.setdefault("palette", {})["primary"] = lyric_color
                 
                 print(f"[{job_id}] Motion Manifest Synthesized (User-Guided): {motion_manifest.keys()}")
             except Exception as e:
                 print(f"[{job_id}] Motion Manifest generation failed: {e}. Using safe defaults.")
                 motion_manifest = {
                     "typography": { "fontFamily": font_family or "Inter", "fontWeight": 800, "fontSize": font_size or 6 },
+                    "palette": { "primary": lyric_color or "#ffffff", "secondary": "#cccccc" },
                     "layout": { "mode": position or "center" },
-                    "kinetics": { "effect": animation_effect or "fade", "reactivity": 1.0 }
+                    "kinetics": { "effect": animation_effect or "fade", "reactivity": 1.0, "physics": "spring" }
                 }
             
 

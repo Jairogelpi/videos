@@ -29,6 +29,8 @@ interface UniversalProps {
   lyricColor?: string;
   lyricOpacity?: number;
   animationEffect?: string;
+  videoTitle?: string;
+  titleFontFamily?: string;
 }
 
 export const MyComposition: React.FC<UniversalProps> = ({
@@ -39,7 +41,8 @@ export const MyComposition: React.FC<UniversalProps> = ({
   energy_flux = [],
   motion_manifest,
   // Fallbacks for legacy jobs
-  styleId, position, fontSize, fontFamily, lyricColor, lyricOpacity, animationEffect
+  styleId, position, fontSize, fontFamily, lyricColor, lyricOpacity, animationEffect,
+  videoTitle, titleFontFamily
 }) => {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -66,8 +69,9 @@ export const MyComposition: React.FC<UniversalProps> = ({
   }, [motion_manifest, fontFamily, fontSize, lyricOpacity, position, animationEffect, lyricColor]);
 
   // 1a. Dynamic Font Loading
-  // Construct Google Fonts URL. Handles spaces in usage (e.g. "Open Sans" -> "Open+Sans")
-  const fontUrl = `https://fonts.googleapis.com/css2?family=${(manifest.typography.fontFamily || 'Inter').replace(/\s+/g, '+')}:wght@400;700;900&display=swap`;
+  // Load both main font and title font
+  const fontsToLoad = Array.from(new Set([manifest.typography.fontFamily || 'Inter', titleFontFamily || 'Syne']));
+  const fontUrl = `https://fonts.googleapis.com/css2?family=${fontsToLoad.map(f => f.replace(/\s+/g, '+')).join('&family=')}:wght@400;700;900&display=swap`;
 
   // 2. Audio Energy Calculation
   const currentSecond = Math.floor(currentTime);
@@ -118,7 +122,7 @@ export const MyComposition: React.FC<UniversalProps> = ({
       <AbsoluteFill style={containerStyle}>
         {activeToken && (
           <KineticTypography
-            text={activeToken.w}
+            text={activeToken.tw || activeToken.w}
             manifest={manifest}
             energy={smoothEnergy}
             t={t}
@@ -127,8 +131,32 @@ export const MyComposition: React.FC<UniversalProps> = ({
         )}
       </AbsoluteFill>
 
-      {/* Subtitles / Translations */}
-      {activeToken?.tw && (
+      {/* Main Title Overlay (0-3s) */}
+      {frame < 3 * fps && videoTitle && (
+        <AbsoluteFill style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: 'rgba(0,0,0,0.3)',
+        }}>
+          <div style={{
+            fontFamily: titleFontFamily || 'Syne',
+            fontSize: '12rem',
+            fontWeight: 900,
+            color: 'white',
+            textAlign: 'center',
+            textTransform: 'uppercase',
+            letterSpacing: '0.2em',
+            opacity: interpolate(frame, [0, 10, (3 * fps) - 10, 3 * fps], [0, 1, 1, 0]),
+            transform: `scale(${interpolate(frame, [0, 3 * fps], [0.9, 1.1])})`,
+          }}>
+            {videoTitle}
+          </div>
+        </AbsoluteFill>
+      )}
+
+      {/* Subtitles / Translations (Only if it's the secondary language) */}
+      {activeToken?.tw && activeToken?.w && (
         <div style={{
           position: 'absolute',
           bottom: 100,
@@ -137,9 +165,9 @@ export const MyComposition: React.FC<UniversalProps> = ({
           fontFamily: 'Inter',
           fontSize: 40,
           color: 'white',
-          opacity: 0.6
+          opacity: 0.4
         }}>
-          {activeToken.tw}
+          {activeToken.w}
         </div>
       )}
     </AbsoluteFill>
