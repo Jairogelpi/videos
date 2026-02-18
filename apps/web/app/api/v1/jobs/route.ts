@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
         if (modalUrl) {
             console.log(`[JobOrchestrator] ☁️ Hybrid Cloud Mode: Offloading job ${job.id} to Modal...`);
             try {
-                const origin = request.nextUrl.origin;
+                const origin = process.env.PUBLIC_CALLBACK_URL || request.nextUrl.origin;
                 const modalPayload = {
                     job_id: job.id,
                     asset_id: resolvedAudioId,

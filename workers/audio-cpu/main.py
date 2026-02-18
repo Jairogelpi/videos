@@ -992,6 +992,9 @@ async def generate_video_background(
         harmonic_key = audio_profile.get("harmonicKey", "Unknown")
         tempo = audio_profile.get("tempo", "Unknown")
         
+        # Derive full lyrics for context
+        full_lyrics = " ".join([w["w"] for w in transcription_words]) if transcription_words else "Instrumental"
+        
         vision_prompt = (
             f"You are a VISIONARY FILM AUTEUR (think Tarkovsky, Kubrick, Jodorowsky) creating a high-concept music video.\n"
             f"SONG DNA:\n"
@@ -1000,7 +1003,7 @@ async def generate_video_background(
             f"- TEMPO: {tempo} BPM\n"
             f"- USER VISUAL THEME: '{bg_prompt}'\n"
             f"- USER ARTISTIC STYLE: '{style_id or 'Director Choice'}'\n"
-            f"- LYRICS: {lyrics[:2000]}\n\n"
+            f"- LYRICS: {full_lyrics[:2000]}\n\n"
             f"TASK: Create a 'Cinematic Universe Blueprint' that ELEVATES the song.\n"
             f"CRITICAL: Do NOT be literal. If the lyrics say 'I'm walking', show a journey through a nebula, not a sidewalk.\n"
             f"The video must be a cohesive, dream-like visual journey, not a series of stock clips.\n"
