@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useCurrentFrame, useVideoConfig, Audio, AbsoluteFill, OffthreadVideo } from 'remotion';
+import { useCurrentFrame, useVideoConfig, Audio, AbsoluteFill, OffthreadVideo, interpolate } from 'remotion';
 import { KineticTypography } from './components/KineticTypography';
 import { MotionManifest } from './types/MotionManifest';
 
@@ -45,44 +45,87 @@ export const MyComposition: React.FC<UniversalProps> = ({
   videoTitle, titleFontFamily
 }) => {
   const frame = useCurrentFrame();
-  const { fps, width, height } = useVideoConfig();
+  const { fps } = useVideoConfig();
   const currentTime = frame / fps;
 
-  // 1. Resolve Motion Manifest (Merge User Constraints if passed as loose props)
+  // 1. Resolve Motion Manifest (Safe Deep Merge)
   const manifest: MotionManifest = useMemo(() => {
-    // Default Fallback
-    const base: MotionManifest = motion_manifest || {
-      typography: { fontFamily: fontFamily || 'Inter', fontWeight: 800, fontSize: fontSize || 6, opacity: lyricOpacity ?? 1 },
-      palette: { primary: lyricColor || '#ffffff', secondary: '#cccccc' },
+    const defaultManifest: MotionManifest = {
+      typography: {
+        fontFamily: fontFamily || 'Inter',
+        fontWeight: 800,
+        fontSize: fontSize || 6,
+        opacity: lyricOpacity ?? 1
+      },
+      palette: {
+        primary: lyricColor || '#ffffff',
+        secondary: '#cccccc',
+        shadow: 'rgba(0,0,0,0.5)',
+        glow: 'transparent'
+      },
       layout: { mode: (position as any) || 'center' },
-      kinetics: { reactivity: 1.0, jitter: 0.0, effect: animationEffect || 'fade', physics: 'spring' }
+      kinetics: {
+        reactivity: 1.0,
+        jitter: 0.0,
+        effect: animationEffect || 'fade',
+        physics: 'spring'
+      }
     };
 
-    // Ensure strict override if props exist (redundancy check)
-    if (fontFamily) base.typography.fontFamily = fontFamily;
-    if (fontSize) base.typography.fontSize = fontSize;
-    if (lyricOpacity !== undefined) base.typography.opacity = lyricOpacity;
-    if (position) base.layout.mode = position as any;
-    if (animationEffect) base.kinetics.effect = animationEffect;
+    if (!motion_manifest) return defaultManifest;
 
-    return base;
+    // Merge logic: prefer manifest but fallback to defaults or props
+    return {
+      typography: {
+        ...defaultManifest.typography,
+        ...motion_manifest.typography,
+        // Override with explicit props if they exist
+        ...(fontFamily ? { fontFamily } : {}),
+        ...(fontSize ? { fontSize } : {}),
+        ...(lyricOpacity !== undefined ? { opacity: lyricOpacity } : {}),
+      },
+      palette: {
+        ...defaultManifest.palette,
+        ...motion_manifest.palette,
+        ...(lyricColor ? { primary: lyricColor } : {}),
+      },
+      layout: {
+        ...defaultManifest.layout,
+        ...motion_manifest.layout,
+        ...(position ? { mode: position as any } : {}),
+      },
+      kinetics: {
+        ...defaultManifest.kinetics,
+        ...motion_manifest.kinetics,
+        ...(animationEffect ? { effect: animationEffect } : {}),
+      }
+    };
   }, [motion_manifest, fontFamily, fontSize, lyricOpacity, position, animationEffect, lyricColor]);
 
-  // 1a. Dynamic Font Loading
-  // Load both main font and title font
-  const fontsToLoad = Array.from(new Set([manifest.typography.fontFamily || 'Inter', titleFontFamily || 'Syne']));
+  // 1a. Dynamic Font Loading (Filter out AI prompts or long descriptions)
+  const isValidFont = (f: string) => f && f.length < 40 && !f.includes('(') && !f.includes('Choose');
+  const fontsToLoad = Array.from(new Set([
+    isValidFont(manifest.typography.fontFamily) ? manifest.typography.fontFamily : 'Inter',
+    isValidFont(titleFontFamily || '') ? titleFontFamily : 'Syne'
+  ])).filter(Boolean) as string[];
+
   const fontUrl = `https://fonts.googleapis.com/css2?family=${fontsToLoad.map(f => f.replace(/\s+/g, '+')).join('&family=')}:wght@400;700;900&display=swap`;
 
-  // 2. Audio Energy Calculation
+  // 2. Audio Energy Calculation (Normalize CamelCase vs snake_case)
+  const activeEnergySeries = (energy_flux && energy_flux.length > 0)
+    ? energy_flux
+    : (manifest as any).energyFlux || [];
+
   const currentSecond = Math.floor(currentTime);
-  const localEnergy = energy_flux[currentSecond] || 0.5;
-  const nextEnergy = energy_flux[currentSecond + 1] || localEnergy;
+  const localEnergy = activeEnergySeries[currentSecond] || 0.5;
+  const nextEnergy = activeEnergySeries[currentSecond + 1] || localEnergy;
   const energyProgress = currentTime % 1;
   const smoothEnergy = localEnergy * (1 - energyProgress) + nextEnergy * energyProgress;
 
   // 3. Active Word Logic
-  const activeToken = words.find(w => currentTime >= w.t0 && currentTime <= w.t1);
-  const t = activeToken ? (frame - (activeToken.t0 * fps)) : 0;
+  const safeWords = (words || []) as Word[];
+  const activeToken = safeWords.find(w => currentTime >= (w.t0 ?? 0) && currentTime <= (w.t1 ?? 0));
+  const t = activeToken ? (frame - ((activeToken.t0 ?? 0) * fps)) : 0;
 
   // 4. Layout Calculation
   const containerStyle: React.CSSProperties = {
@@ -107,8 +150,12 @@ export const MyComposition: React.FC<UniversalProps> = ({
   return (
     <AbsoluteFill className="bg-black font-sans">
       <link rel="stylesheet" href={fontUrl} />
-      {/* Background Layer */}
-      <AbsoluteFill>
+      {/* Background Layer: Reacts to audio energy (Pulse) */}
+      <AbsoluteFill style={{
+        transform: `scale(${1 + (smoothEnergy * (manifest.kinetics.reactivity || 1.0) * 0.03)})`,
+        filter: manifest.kinetics.effect === 'glitch' && smoothEnergy > 0.8 ? 'hue-rotate(90deg) saturate(150%)' : 'none',
+        transition: 'transform 0.1s ease-out'
+      }}>
         {videoBgUrl ? (
           <OffthreadVideo src={videoBgUrl} className="w-full h-full object-cover" />
         ) : (

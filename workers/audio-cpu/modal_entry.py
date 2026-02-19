@@ -171,16 +171,18 @@ class AudioWorker:
         print("[STARTUP] 🚀 Neutron-Start Complete. Memory Optimized.")
 
     @modal.method()
-    def generate_scene(self, job_id, i, num_clips, scenes, scene_durations):
+    def generate_scene(self, job_id, i, num_clips, scenes, scene_durations, fps=24, width=720, height=1280):
         """Worker method for parallel scene generation (Returns bytes)."""
         import os
         import tempfile
         worker_tmp = tempfile.mkdtemp()
         try:
-            interp_path = self.main.generate_single_scene(job_id, i, num_clips, scenes, scene_durations, worker_tmp)
+            interp_path, raw_path = self.main.generate_single_scene(job_id, i, num_clips, scenes, scene_durations, worker_tmp, fps=fps, width=width, height=height)
             with open(interp_path, "rb") as f:
-                video_data = f.read()
-            return video_data
+                interp_data = f.read()
+            with open(raw_path, "rb") as f:
+                raw_data = f.read()
+            return {"interp": interp_data, "raw": raw_data}
         finally:
             import shutil
             shutil.rmtree(worker_tmp, ignore_errors=True)
@@ -209,25 +211,29 @@ class AudioWorker:
             }
 
             # Parallel Generator Hook (Distributed Async)
-            async def modal_parallel_generator(scenes, durations, tmp_dir):
+            async def modal_parallel_generator(scenes, durations, tmp_dir, fps=24, width=720, height=1280):
                 print(f"[{job_id}] ⚡ Modal Distributed: Launching {len(scenes)} parallel GPU workers...")
-                import os
                 
-                # Starmap arguments
-                args = [(job_id, i, len(scenes), scenes, durations) for i in range(len(scenes))]
+                # Starmap arguments with dynamic res/fps
+                args = [(job_id, i, len(scenes), scenes, durations, fps, width, height) for i in range(len(scenes))]
                 
                 # Execute concurrently on remote GPUs using async generator
                 results = []
                 async for res in self.generate_scene.starmap.aio(args):
                     results.append(res)
                 
-                # Re-assemble bytes into local orchestrator filesystem for FFmpeg concat
+                # Re-assemble bytes into local orchestrator filesystem
                 clip_paths = []
-                for i, video_bytes in enumerate(results):
-                    local_path = os.path.join(tmp_dir, f"scene_{i}.mp4")
-                    with open(local_path, "wb") as f:
-                        f.write(video_bytes)
-                    clip_paths.append(local_path)
+                for i, res_dict in enumerate(results):
+                    interp_path = os.path.join(tmp_dir, f"scene_{i}.mp4")
+                    raw_path = os.path.join(tmp_dir, f"raw_scene_{i}.mp4")
+                    
+                    with open(interp_path, "wb") as f:
+                        f.write(res_dict["interp"])
+                    with open(raw_path, "wb") as f:
+                        f.write(res_dict["raw"])
+                    
+                    clip_paths.append(interp_path)
                 
                 print(f"[{job_id}] Distributed assembly complete. {len(clip_paths)} clips ready.")
                 return clip_paths

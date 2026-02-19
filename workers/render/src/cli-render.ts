@@ -144,6 +144,21 @@ async function runRender(jobId: string, userId: string, analysisAssetId: string)
         await reportSync(jobId, 'stage', { status: 'encoding', progress: 50 }, userId);
         console.log(`[${jobId}] Rendering...`);
 
+        // 2a. Dynamic Quality Overrides (No Mocks)
+        const resStr = analysisJson.resolution || '1080p';
+        let width = 1088; // 1080 is not divisible by 16, using 1088
+        let height = 1920;
+        if (resStr === '720p') {
+            width = 720;
+            height = 1280;
+        }
+        const fps = analysisJson.fps || 24;
+
+        // Override composition settings with dynamic ones
+        composition.width = width;
+        composition.height = height;
+        composition.fps = fps;
+
         await renderMedia({
             composition,
             serveUrl: bundled,

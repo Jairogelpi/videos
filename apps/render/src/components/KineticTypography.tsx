@@ -21,19 +21,23 @@ export const KineticTypography: React.FC<KineticTypographyProps> = ({
 
     // --- PHYSICS ENGINE --- //
     // 1. Scales based on Energy (Reactivity)
-    const reactiveScale = 1 + (energy * (kinetics.reactivity || 0) * 0.1);
+    // Amp up the bass response so the text "breaths" with the track
+    const reactivityMultiplier = kinetics.reactivity !== undefined ? kinetics.reactivity : 1.0;
+    const reactiveScale = 1 + (energy * reactivityMultiplier * 0.15);
 
     // 2. Jitter (Shake)
-    const jitterX = (Math.random() - 0.5) * (kinetics.jitter || 0) * 20 * energy;
-    const jitterY = (Math.random() - 0.5) * (kinetics.jitter || 0) * 20 * energy;
+    const jitterX = (Math.random() - 0.5) * (kinetics.jitter || 0) * 30 * energy;
+    const jitterY = (Math.random() - 0.5) * (kinetics.jitter || 0) * 30 * energy;
 
-    // 3. Entrance Animation (Spring / Linear)
+    // 3. Entrance Animation (Physics Engine)
+    // Read the physics type from Gemini's manifest: spring, bounce, elastic, linear
     const entranceProgress = spring({
         frame: t,
         fps,
         config: {
-            damping: kinetics.physics === 'bounce' ? 8 : 12,
-            stiffness: kinetics.physics === 'elastic' ? 200 : 100
+            damping: kinetics.physics === 'bounce' ? 8 : kinetics.physics === 'elastic' ? 6 : 14,
+            stiffness: kinetics.physics === 'elastic' ? 350 : kinetics.physics === 'spring' ? 150 : 100,
+            mass: kinetics.physics === 'bounce' ? 1.5 : 1
         }
     });
 
@@ -83,7 +87,7 @@ export const KineticTypography: React.FC<KineticTypographyProps> = ({
         return style;
     }, [kinetics.effect, t, energy, palette, entranceProgress, reactiveScale]);
 
-    // Apply User Constraints (Explicitly Overriding Defaults)
+    // Apply User Constraints & Physics Master Layer
     const baseStyle: React.CSSProperties = {
         fontFamily: typography.fontFamily,
         fontWeight: typography.fontWeight,
@@ -95,10 +99,13 @@ export const KineticTypography: React.FC<KineticTypographyProps> = ({
         transform: `
             ${effectStyle.transform || ''}
             translate(${jitterX}px, ${jitterY}px)
+            scale(${reactiveScale})
         `,
         filter: effectStyle.filter,
         textAlign: 'center',
-        padding: '0 2rem'
+        padding: '0 2rem',
+        textTransform: 'uppercase', // Looks generally more cinematic for lyrics
+        willChange: 'transform, opacity' // Hardware acceleration
     };
 
     // Special handling for Typewriter effect text content

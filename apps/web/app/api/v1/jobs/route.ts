@@ -139,6 +139,9 @@ export async function POST(request: NextRequest) {
                     video_title: videoTitle,
                     title_font_family: titleFontFamily,
                     lyricColor,
+                    resolution: job.resolution || '1080p',
+                    fps: job.fps || 30,
+                    duration_sec: job.duration_sec || 60,
                     callback_url: `${origin}/api/v1/internal/workers/callback`
                 };
 

@@ -36,12 +36,14 @@ WanPipeline = None
 FluxPipeline = None
 export_to_video = None
 torch = None
+whisperx = None
 DEVICE = "cuda"
 
 def _ensure_ai_imports():
-    global WanPipeline, FluxPipeline, export_to_video, torch, DEVICE, genai, types
+    global WanPipeline, FluxPipeline, export_to_video, torch, DEVICE, genai, types, whisperx
     if torch is None:
         import torch as _torch
+        import whisperx as _wx
         import diffusers
         from diffusers import WanPipeline as _Wan, FluxPipeline as _Flux
         from diffusers.utils import export_to_video as _export
@@ -53,6 +55,7 @@ def _ensure_ai_imports():
         export_to_video = _export
         genai = _genai
         types = _types
+        whisperx = _wx
         DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         import ftfy
 
@@ -165,7 +168,6 @@ class WhisperModelManager:
     @classmethod
     def get_model(cls):
         _ensure_ai_imports()
-        import whisperx
         if cls._model is None:
             print(f"Loading WhisperX model {WHISPER_MODEL} [ZERO-CHILL] on {DEVICE}...")
             try:
@@ -380,10 +382,13 @@ def profile_audio(path: str) -> Dict[str, Any]:
                 mask = (freqs >= lo) & (freqs < hi)
                 band_energy[name] = float(np.sum(S_power[mask, :]) / total_energy)
 
-            # Peak / Climax Detection (timestamps of top 5 energy moments)
-            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            # Peak / Climax Detection (timestamps of top 10 energy moments based on SUB-BASS and transients)
+            # This avoids false peaks from cymbals and focuses on the true "drops"
+            y_bass = librosa.effects.preemphasis(y)
+            S_bass = np.abs(librosa.stft(y_bass))
+            onset_env = librosa.onset.onset_strength(S=S_bass, sr=sr)
             if len(onset_env) > 10:
-                peak_indices = np.argsort(onset_env)[-5:][::-1]
+                peak_indices = np.argsort(onset_env)[-10:][::-1]
                 peak_times = librosa.frames_to_time(peak_indices, sr=sr)
                 peak_moments = sorted([float(t) for t in peak_times])
             else:
@@ -530,6 +535,13 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float32")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+# --- HYPERCHARGE CONFIG (QUALITY HARD-LOCK) ---
+WAN_STEPS = 50 # Maximum convergence (Plan: Concrete Reality)
+WAN_GUIDANCE = 5.0 # Sweet spot for stability and 3D depth
+DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "30"))
+DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "720p")
+# ------------------------------------
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 headers = {
@@ -568,7 +580,7 @@ def report_stage(job_id: str, status: str, progress: int, user_id: str = None, m
         data["metrics"] = metrics
     return safe_callback(job_id, data)
 
-def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float, max_scenes_limit: int = 8, job_id: str = "") -> List[float]:
+def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float, transcription_words: List[Dict] = None, max_scenes_limit: int = 8, job_id: str = "") -> List[float]:
     """
     Intelligent Narrative Engine: Decides scene count and durations based on musical peaks.
     """
@@ -596,37 +608,81 @@ def compute_beat_sync_cuts(audio_profile: Dict[str, Any], total_duration: float,
                 intelligent_cuts.append(snap_cut)
                 last_cut = snap_cut
     
-    # 2. Fill gaps: If a scene is too long (>MAX), find midpoints on beats
+    # 2. Fill gaps: If a scene is too long (>MAX), find midpoints with organic variance
     final_cuts = []
     last_v = 0.0
+    import random
+
     for c in (intelligent_cuts + [total_duration]):
         gap = c - last_v
         if gap > MAX_SCENE_DUR:
-            # Split the gap
+            # Determine how many scenes we need to pack into this gap
             num_splits = math.ceil(gap / MAX_SCENE_DUR)
+            
+            # Instead of equal splits (gap/num_splits), we create an "organic sequence"
+            # where each piece has a slightly different target size.
+            current_pos = last_v
             for s in range(1, num_splits):
-                mid = last_v + (s * (gap / num_splits))
-                # Try to find a beat near mid
+                # Target a varied midpoint (e.g., 40/60 split or similar)
+                # target_inc is roughly (gap / num_splits) but with a 20% jitter
+                target_inc = (gap / num_splits) * random.uniform(0.8, 1.2)
+                mid = current_pos + target_inc
+                
+                # Snap to a beat near this varied target for rhythmic cohesion
                 nearest_b = min(beat_positions, key=lambda b: abs(b - mid)) if beat_positions else mid
-                final_cuts.append(nearest_b)
+                
+                # Safety: ensure the snap doesn't create a tiny scene
+                if (nearest_b - current_pos) >= MIN_SCENE_DUR and (c - nearest_b) >= MIN_SCENE_DUR:
+                    final_cuts.append(nearest_b)
+                    current_pos = nearest_b
         if c < total_duration:
             final_cuts.append(c)
         last_v = c
 
     final_cuts = sorted(list(set([round(x, 2) for x in final_cuts])))
     
+    # 2.5 Lyrical Awareness: Shift cuts to avoid splitting words
+    if transcription_words:
+        adjusted_cuts = []
+        for c in final_cuts:
+            shifted_c = c
+            # Find any word that wraps around this cut
+            for w in transcription_words:
+                w_start = w.get('start', w.get('t0', 0))
+                w_end = w.get('end', w.get('t1', 0))
+                # If the cut is happening right in the middle of a word (give a 0.1s margin)
+                if (w_start - 0.1) < c < (w_end + 0.1):
+                    # Decide whether to push the cut BEFORE the word or AFTER the word
+                    dist_to_start = c - w_start
+                    dist_to_end = w_end - c
+                    if dist_to_start < dist_to_end:
+                        shifted_c = max(0.5, w_start - 0.2) # push before
+                    else:
+                        shifted_c = min(total_duration - 0.5, w_end + 0.2) # push after
+                    print(f"[{job_id}] 🎤 Shifted cut from {c:.2f}s to {shifted_c:.2f}s to avoid clipping a word.")
+                    break
+            adjusted_cuts.append(shifted_c)
+        final_cuts = sorted(list(set([round(x, 2) for x in adjusted_cuts])))
+
     # 3. Final Limits: Cap total scenes to prevent compute runaway
     if len(final_cuts) >= max_scenes_limit:
         final_cuts = final_cuts[:max_scenes_limit-1]
 
     # Convert to scene durations
     all_boundaries = [0.0] + final_cuts + [total_duration]
-    scene_durations = [round(all_boundaries[i+1] - all_boundaries[i], 2) for i in range(len(all_boundaries)-1)]
+    scene_durations = [round(all_boundaries[i+1] - all_boundaries[i], 3) for i in range(len(all_boundaries)-1)]
     
     # Safety: ensure no scene is TOO small (FFmpeg/WAN crash risk)
+    # And normalize the last clip to ensure floating point precision matches exactly
     scene_durations = [max(1.5, d) for d in scene_durations]
     
-    print(f"[{job_id}] Intelligent Segmentation: Created {len(scene_durations)} scenes based on musical narrative.")
+    # Final Normalization: Adjust the last clip so the sum is PERFECT
+    current_sum = sum(scene_durations)
+    diff = total_duration - current_sum
+    if abs(diff) > 0.001:
+        scene_durations[-1] = round(max(1.5, scene_durations[-1] + diff), 3)
+
+    print(f"[{job_id}] Intelligent Segmentation: Created {len(scene_durations)} scenes (Total: {sum(scene_durations):.2f}s / Target: {total_duration:.2f}s)")
     return scene_durations
 
 def compute_segment_moods(audio_path: str, scene_durations: List[float], job_id: str = "") -> List[Dict[str, Any]]:
@@ -884,52 +940,66 @@ def synthesize_audio_narrative(profile: Dict[str, Any]) -> str:
         f"Spatial character: {spatial_desc}. "
         f"{peaks_desc}. "
         f"Dynamics: {dynamics_desc} (loudness: {lufs:.1f} LUFS). "
-        f"Emotional DNA: {valence_desc} (valence: {valence:+.2f})."
+        f"Emotional DNA: {valence_desc} (valence: {valence:+.2f}).\n"
+        f"-> VISUAL DIRECTIVES BASED ON AUDIO:\n"
+        f"- Camera Kinetics: Scale camera motion to the {tempo:.0f} BPM tempo and {rhythm_desc}.\n"
+        f"- Lighting & Palette: Lighting intensity must reflect the energy contour ({contour_desc}) and {valence_desc}."
     )
     
     return narrative
 
 
 
-def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir):
+def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir, fps=24, width=720, height=1280):
     _ensure_ai_imports()
     wan_pipe = WanModelManager.get_pipe()
     
     scene_dur = scene_durations[i]
     current_prompt = scenes[i] if i < len(scenes) else scenes[-1]
     
-    print(f"[{job_id}] Scene {i+1}/{num_clips} [Stage 1/2: WAN]")
+    print(f"[{job_id}] Scene {i+1}/{num_clips} [Stage 1/2: WAN ({width}x{height} @ {fps}fps)]")
     
     # Stage 1: Wan 2.1 Motion
-    # Masterpiece Polish: 30 steps for high fidelity
+    # L4 Optimization: Use 33 frames to balance resolution and quality
+    BASE_FRAMES = 33 
+    
+    # ENSURE PHYSICALITY: Force strict descriptive anchors
+    final_prompt = f"{current_prompt}, highly detailed, 3d, realistic materials, volumetric lighting, sharp focus, masterpiece"
+    final_negative = (
+        "abstract textures, blurry, noise, static, low quality, cartoon, flat colors, "
+        "distorted faces, messy patterns, wallpaper, glitch, flickering, incoherent objects, "
+        "grainy, placeholder, grey blob"
+    )
+    
     output = wan_pipe(
-        prompt=current_prompt + ", realistic motion, cinematic",
-        negative_prompt="cartoon, low quality, blurry, text, watermark",
-        width=720,
-        height=1280,
-        num_frames=17,
-        num_inference_steps=15, # Optimized: 15 steps is the "sweet spot" for L4 GPUs
-        guidance_scale=5.0
+        prompt=final_prompt,
+        negative_prompt=final_negative,
+        width=width,
+        height=height,
+        num_frames=BASE_FRAMES,
+        num_inference_steps=WAN_STEPS, 
+        guidance_scale=WAN_GUIDANCE
     )
     frames = output.frames[0]
     
     raw_path = os.path.join(tmp_dir, f"raw_scene_{i}.mp4")
-    export_to_video(frames, raw_path, fps=16)
+    export_to_video(frames, raw_path, fps=16) # Wan base is 16
     
     print(f"[{job_id}] Scene {i+1}/{num_clips} [Stage 3/3: MCI]")
     
     # Stage 3: Light-Speed FFmpeg MCI
     interp_path = os.path.join(tmp_dir, f"scene_{i}.mp4")
-    pts_factor = scene_dur / (17/16)
+    pts_factor = scene_dur / (BASE_FRAMES/16)
     
     try:
         subprocess.run([
             "ffmpeg", "-y", "-i", raw_path,
             "-vf", (
                 f"setpts={pts_factor}*PTS,"
-                f"minterpolate=fps=24:mi_mode=mci:mc_mode=obmc,"
-                f"scale=720:1280:force_original_aspect_ratio=decrease,"
-                f"pad=720:1280:(ow-iw)/2:(oh-ih)/2,"
+                f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=obmc,"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+                f"unsharp=5:5:0.8:5:5:0.0," # Professional Sharpening
                 f"noise=alls=5:allf=t+u," # Subtle Film Grain
                 f"eq=contrast=1.05:saturation=1.1" # Gentle Cinematic Grade
             ),
@@ -940,10 +1010,7 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
         import shutil
         shutil.copy(raw_path, interp_path)
     
-    return interp_path
-
-    
-    return interp_path
+    return interp_path, raw_path
 
 async def generate_video_background(
     job_id: str, user_id: str, audio_path: str, bg_prompt: str, 
@@ -951,7 +1018,8 @@ async def generate_video_background(
     style_id: Optional[str] = None, font_family: Optional[str] = None, animation_effect: Optional[str] = None, 
     lyric_opacity: Optional[float] = None, position: Optional[str] = None, font_size: Optional[int] = None,
     video_title: Optional[str] = None, title_font_family: Optional[str] = None,
-    parallel_generator=None, audio_profile: Dict[str, Any] = None
+    parallel_generator=None, audio_profile: Dict[str, Any] = None,
+    resolution: str = "1080p", fps: int = 24
 ) -> str:
     """
     Beat-Sync Narrative Engine (Plan Light-Speed).
@@ -962,6 +1030,13 @@ async def generate_video_background(
         # Derive duration from start_time and end_time
         duration = end_time - start_time
 
+        # Drive width/height from resolution
+        width, height = 720, 1280
+        if resolution == "1080p":
+            width, height = 1088, 1920 # 1080 is not divisible by 16, using 1088
+        elif resolution == "720p":
+            width, height = 720, 1280
+
         # 1. BEAT-SYNC ENGINE
         # Use the provided audio_profile, or compute if not provided (though it should be)
         if not audio_profile:
@@ -969,10 +1044,26 @@ async def generate_video_background(
             print(f"[{job_id}] Warning: audio_profile not provided to generate_video_background. Computing now.")
             audio_profile = profile_audio(audio_path)
 
-        target_scenes = max(4, math.ceil(duration / 15.0))
-        print(f"[{job_id}] Dynamic Scene Target: {target_scenes} scenes for {duration:.1f}s")
+        tempo = audio_profile.get("tempo", 120)
+        # Higher BPM -> More scenes (shorter clips). 120 BPM is our baseline (10s clips)
+        tempo_factor = max(0.5, min(2.0, tempo / 120.0))
+        base_sec_per_scene = 12.0 / tempo_factor
         
-        scene_durations = compute_beat_sync_cuts(audio_profile, duration, max_scenes_limit=target_scenes, job_id=job_id)
+        target_scenes = math.ceil(duration / base_sec_per_scene)
+        # Add a bonus scene for high complexity
+        if audio_profile.get("rhythmicComplexity", 0) > 0.06:
+            target_scenes += 1
+            
+        target_scenes = max(4, min(12, target_scenes)) # Clamp between 4 and 12 scenes
+        print(f"[{job_id}] Dynamic Scene Target: {target_scenes} scenes for {duration:.1f}s (Tempo: {tempo:.1f} BPM)")
+        
+        scene_durations = compute_beat_sync_cuts(
+            audio_profile, 
+            duration, 
+            transcription_words=transcription_words, 
+            max_scenes_limit=target_scenes, 
+            job_id=job_id
+        )
         num_clips = len(scene_durations)
         
         # 2. PER-SEGMENT MOOD ANALYSIS
@@ -988,25 +1079,25 @@ async def generate_video_background(
         full_lyrics = " ".join([w["w"] for w in transcription_words]) if transcription_words else "Instrumental"
         
         vision_prompt = (
-            f"You are a VISIONARY FILM AUTEUR (think Tarkovsky, Kubrick, Jodorowsky) creating a high-concept music video.\n"
-            f"SONG DNA:\n"
-            f"- MOOD: {audio_mood.upper()}\n"
-            f"- NARRATIVE SUMMARY: {audio_narrative}\n"
-            f"- USER VISUAL THEME: '{bg_prompt}'\n"
-            f"- USER ARTISTIC STYLE: '{style_id or 'Director Choice'}'\n"
-            f"- TOTAL SCENES: {num_clips} (Precisely aligned to musical transitions)\n"
-            f"- LYRICS: {full_lyrics[:2000]}\n\n"
-            f"TASK: Create a 'Cinematic Universe Blueprint' for a {num_clips}-scene visual masterpiece.\n"
-            f"CRITICAL: Do NOT be literal. The scene transitions were calculated to hit MUSICAL PEAKS. "
-            f"Your narrative must build tension and release in sync with the song's energy.\n"
-            f"The video must be a cohesive, dream-like visual journey, not a series of stock clips.\n"
-            f"Include:\n"
-            f"1. 'protagonist': A SURREAL character consistent with the USER STYLE.\n"
-            f"2. 'artistic_movement': Use '{style_id}' if provided, otherwise invent a bold style.\n"
-            f"3. 'color_palette': 3 specific hex codes or complex color names.\n"
-            f"4. 'lighting_mood': Atmospheric lighting.\n"
-            f"5. 'narrative_arc': An abstract, metaphorical story summary that merges the USER THEME with the LYRICS.\n"
-            f"Output ONLY the JSON."
+            f"You are a VISIONARY FILM DIRECTOR and SYMBOLIST ARTIST (Aki Kaurismäki, Denis Villeneuve, Alejandro Jodorowsky).\n"
+            f"GOAL: Create a visual masterpiece that isn't just 'cool' but DEEPLY SYNCHRONIZED with the song's soul.\n\n"
+            f"SONG ANALYSIS:\n"
+            f"- MOOD/INTENSITY: {audio_mood.upper()}\n"
+            f"- MUSICAL NARRATIVE: {audio_narrative}\n"
+            f"- USER THEME: '{bg_prompt}'\n"
+            f"- ARTISTIC STYLE: '{style_id or 'Visual Poetry'}'\n"
+            f"THE DIRECTOR'S MISSION:\n"
+            f"1. CONCRETE REALITY: Do NOT be abstract. Every scene MUST feature a tangible, recognizable object or person. Avoid 'voids', 'concepts', or 'spirits'.\n"
+            f"2. PHYSICAL SYMBOLISM: If the lyric is 'pain', show a physical object breaking (a mirror, a statue, a bone). Show MATERIALITY.\n"
+            f"3. CINEMATIC PAYOFF: Your total {num_clips} scenes are aligned to the song's energy peaks. Ensure the most intense scene corresponds to the climax.\n"
+            f"4. DEPTH & VOLUME: Describe 3D space. Use terms like 'foreground', 'background', 'silhouetted', 'macro perspective'.\n"
+            f"5. COHERENCE: The protagonist must be the anchor of every scene.\n\n"
+            f"OUTPUT JSON WITH:\n"
+            f"- 'protagonist': A unique, tangible character embodying the theme.\n"
+            f"- 'artistic_movement': Use '{style_id}' if relevant, or define a bold, consistent movement.\n"
+            f"- 'color_palette': 3 specific, atmospheric colors.\n"
+            f"- 'narrative_arc': A physical, metaphorical journey spanning all {num_clips} clips.\n"
+            f"JSON ONLY."
         )
         
         try:
@@ -1052,21 +1143,23 @@ async def generate_video_background(
         scene_context_block = "\n".join(scene_lyrics_context)
         
         scene_generation_prompt = (
-            f"Using the Blueprint below, write exactly {num_clips} AVANT-GARDE scene descriptions.\n"
+            f"Using the Blueprint below, write exactly {num_clips} VISUALLY COHERENT and CINEMATIC scene descriptions.\n"
             f"BLUEPRINT: {json.dumps(blueprint)}\n\n"
+            f"--- GLOBAL AUDIO CONTEXT (USE FOR LIGHTING & CAMERA) ---\n"
+            f"{audio_narrative}\n\n"
             f"--- SCENE CONTEXT ---\n"
             f"{scene_context_block}\n"
             f"---------------------\n\n"
-            f"INSTRUCTIONS:\n"
-            f"1. NO LITERALISM: Interpret the lyrics METAPHORICALLY. If the lyric is about 'love', show a burning rose, not a couple hugging.\n"
-            f"2. VISUAL CONTINUITY: Every scene MUST feature the '{blueprint.get('protagonist')}' in the style of '{blueprint.get('artistic_movement')}'.\n"
-            f"3. DREAM LOGIC: Scenes should feel like a fever dream or a high-end art film. Unexpected angles, strange physics, surreal lighting.\n"
-            f"4. LIGHTING/COLOR: Use the '{blueprint.get('lighting_mood')}' and palette ({blueprint.get('color_palette')}) to create ATMOSPHERE.\n"
-            f"5. PROMPT FORMAT: 'Cinematic shot of [PROTAGONIST] [doing surreal action], [surreal environment], [lighting], [style], 8k, masterpiece'.\n"
-            f"6. LIMITS: Keep each prompt under 50 words. Focus on VISUAL IMPACT.\n"
+            f"INSTRUCTIONS FOR HIGH-FIDELITY VIDEO:\n"
+            f"1. VISUAL CONSISTENCY: Define a 'VISUAL IDENTITY BIBLE' at the start of your response. Every scene MUST follow this bible (e.g., 'Protagonist is a 30yo man with a red jacket').\n"
+            f"2. CONCRETE OBJECTS: Describe physical 3D objects. Use 'marble statue', 'wooden table', 'golden gears'.\n"
+            f"3. MATERIALITY: Focus on TOUCH and TEXTURE. Use words like 'polished obsidian', 'weathered stone', 'wet skin'.\n"
+            f"4. DYNAMIC LIGHTING: Specify 'rim lighting', 'volumetric fog', or 'harsh shadows'. Match lighting intensity to the Audio Dynamics and Energy Contour.\n"
+            f"5. CAMERA MOVEMENT: Add precise camera directions (e.g., 'fast crash zoom', 'slow ethereal pan', 'shaky handheld') matching the local Scene Tempo and Energy.\n"
+            f"6. NO ABSTRACTION: Do NOT use words like 'metaphor', 'concept', 'dreamy', or 'spirit'. Focus on REALITY.\n"
+            f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action/state], [specific environment], [lighting details], [camera movement], high contrast, masterpiece'.\n"
             f"Output JSON array of strings ONLY."
         )
-
         try:
             scene_response = director_client.models.generate_content(model="gemini-2.0-flash", contents=scene_generation_prompt)
             text = scene_response.text.strip()
@@ -1081,21 +1174,52 @@ async def generate_video_background(
         # 5. EXECUTION: Parallel or Sequential
         tmp_dir = tempfile.mkdtemp()
         clip_paths = []
-
+        
+        # Narrative transition duration (semi-dynamic based on tempo)
+        tempo = audio_profile.get("tempo", 120)
+        TR_DUR = 1.0 if tempo < 100 else 0.75
+        
+        # QUALITY LOGIC: To avoid the final video being too short due to xfade overlaps,
+        # we add TR_DUR to every clip's generation duration EXCEPT the last one.
+        generator_durations = [round(d + TR_DUR, 3) for d in scene_durations[:-1]] + [scene_durations[-1]]
+        
         if parallel_generator:
-            print(f"[{job_id}] ⚡ Triggering Parallel Light-Speed Generation...")
-            clip_paths = await parallel_generator(scenes, scene_durations, tmp_dir)
+            print(f"[{job_id}] ⚡ Triggering Parallel Light-Speed Generation (Padded for Transitions)...")
+            clip_paths = await parallel_generator(scenes, generator_durations, tmp_dir, fps=fps, width=width, height=height)
         else:
-            print(f"[{job_id}] Sequential Generation (Light-Speed Optimizations active)...")
+            print(f"[{job_id}] Sequential Generation (Padded for Transitions)...")
             for i in range(num_clips):
                 try:
-                    p = generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir)
-                    clip_paths.append(p)
+                    interp_p, raw_p = generate_single_scene(job_id, i, num_clips, scenes, generator_durations, tmp_dir, fps=fps, width=width, height=height)
+                    clip_paths.append(interp_p)
                 except Exception as e:
                     print(f"[{job_id}] Scene {i} failed: {e}")
 
         if not clip_paths:
             raise Exception("No video clips were generated.")
+
+        # DEBUG: Upload individual clips for inspection
+        print(f"[{job_id}] 🔍 Uploading individual clips for debugging...")
+        for idx, cp in enumerate(clip_paths):
+            try:
+                # 1. Upload Interpolated (MCI) Clip
+                interp_debug_path = f"{job_id}/debug/clip_{idx}_mci.mp4"
+                with open(cp, "rb") as f:
+                    supabase.storage.from_("assets").upload(path=interp_debug_path, file=f, file_options={"content-type": "video/mp4", "x-upsert": "true"})
+                interp_url = f"{SUPABASE_URL}/storage/v1/object/public/assets/{interp_debug_path}"
+                
+                # 2. Upload Raw (Wan) Clip
+                raw_local_path = os.path.join(tmp_dir, f"raw_scene_{idx}.mp4")
+                raw_url = "Not Available"
+                if os.path.exists(raw_local_path):
+                    raw_debug_path = f"{job_id}/debug/clip_{idx}_raw.mp4"
+                    with open(raw_local_path, "rb") as f:
+                        supabase.storage.from_("assets").upload(path=raw_debug_path, file=f, file_options={"content-type": "video/mp4", "x-upsert": "true"})
+                    raw_url = f"{SUPABASE_URL}/storage/v1/object/public/assets/{raw_debug_path}"
+                
+                print(f"[{job_id}] DEBUG CLIP {idx} -> RAW: {raw_url} | MCI: {interp_url}")
+            except Exception as e:
+                print(f"[{job_id}] Debug upload for clip {idx} failed: {e}")
 
         # 6. Final Merging
         master_output = os.path.join(tmp_dir, "master_bg.mp4")
@@ -1123,8 +1247,29 @@ async def generate_video_background(
         
         # Narrative transition duration (semi-dynamic based on tempo)
         tempo = audio_profile.get("tempo", 120)
-        TR_DUR = 1.0 if tempo < 100 else 0.75
+        perc_ratio = audio_profile.get("percussionRatio", 0.3)
+        contour = audio_profile.get("energyContour", "steady")
         
+        # Determine exact transition style based on audio DNA
+        if tempo > 140 and perc_ratio > 0.6:
+            # Hyper-energetic (Electronic/Metal)
+            TR_DUR = 0.4
+            transitions = ["wiperight", "wipeleft", "slideup", "slidedown"]
+        elif tempo > 110:
+            # Upbeat (Pop/Rock)
+            TR_DUR = 0.75
+            transitions = ["fade", "smoothleft", "smoothright"]
+        elif contour == "falling":
+            # Ending or dropping energy
+            TR_DUR = 1.5
+            transitions = ["fade", "fadeblack"]
+        else:
+            # Slow, atmospheric, or cinematic
+            TR_DUR = 1.2
+            transitions = ["fade", "distance"]
+        
+        import random
+
         if len(clip_paths) > 1:
             # Prepare inputs (just labels)
             filter_complex += f"[0:v]setsar=1[v0];"
@@ -1135,13 +1280,16 @@ async def generate_video_background(
             curr_offset = 0
             for i in range(len(clip_paths) - 1):
                 seg_dur = scene_durations[i]
-                curr_offset += seg_dur - TR_DUR
+                curr_offset += seg_dur
                 
                 input_a = "v0" if i == 0 else f"vm{i}"
                 input_b = f"v{i+1}"
                 output_v = f"vm{i+1}"
                 
-                filter_complex += f"[{input_a}][{input_b}]xfade=transition=fade:duration={TR_DUR}:offset={curr_offset:.2f}[{output_v}];"
+                # Pick a random transition from the matched energy pool
+                tr_effect = random.choice(transitions)
+                
+                filter_complex += f"[{input_a}][{input_b}]xfade=transition={tr_effect}:duration={TR_DUR}:offset={curr_offset:.2f}[{output_v}];"
             
             last_label = f"vm{len(clip_paths)-1}"
         else:
@@ -1213,9 +1361,14 @@ async def process_job(job, job_token, parallel_generator=None):
     lyric_color = job.data.get('lyricColor', '#ffffff')
     style_id = job.data.get('style') # Extracted from 'style' as per route.ts
     
-    # Cap duration to 60s as per requirements
-    if end_time - start_time > 60:
-        end_time = start_time + 60
+    # Fully Dynamic Config (No Mocks)
+    resolution = job.data.get('resolution', DEFAULT_RESOLUTION)
+    fps = int(job.data.get('fps', DEFAULT_FPS))
+    duration_total = float(job.data.get('duration_sec', 60))
+    
+    # Cap duration to requested total (60s limit)
+    if end_time - start_time > duration_total:
+        end_time = start_time + duration_total
 
     print(f"[{job_id}] Received job for user {user_id} with asset: {asset_id}")
     print(f"[{job_id}] Range: {start_time}s - {end_time}s (Prompt: {bg_prompt})")
@@ -1256,7 +1409,12 @@ async def process_job(job, job_token, parallel_generator=None):
                 "-ss", str(start_time), 
                 "-t", str(end_time - start_time), 
                 "-i", local_audio_path, 
-                "-ac", "2", "-ar", "44100", 
+                "-map", "0:a:0",
+                "-ac", "2", 
+                "-ar", "44100", 
+                "-c:a", "pcm_s16le",
+                "-af", "volume=-2dB",
+                "-vn",
                 segment_path
             ]
             try:
@@ -1342,6 +1500,9 @@ async def process_job(job, job_token, parallel_generator=None):
             filters.append("highpass=f=120") # Remove rumble
             filters.append("lowpass=f=8000") # Remove high hiss
             
+            # 5. Advanced Noise Gate (Precision for WhisperX)
+            filters.append("agate=threshold=0.04:ratio=4:attack=5:release=100") # Silence everything but actual syllables
+            
             filter_str = ",".join(filters)
             print(f"[{job_id}] Cleaning Chain: {filter_str}")
             
@@ -1355,70 +1516,6 @@ async def process_job(job, job_token, parallel_generator=None):
             # 3. Transcribe & Align (WhisperX) using isolated vocals
             report_stage(job_id, "transcribing", 20, user_id)
             import whisperx
-
-            # --- NEW: Universal Motion Manifest Generation (Phase 46) ---
-            print(f"[{job_id}] Synthesizing Universal Motion Manifest...")
-            # We use the raw audio profile to drive the visual physics of the overlay
-            # BUT we strictly respect User Constraints where provided.
-            
-            user_constraints = {
-                "fontFamily": font_family,
-                "animationEffect": animation_effect,
-                "lyricOpacity": lyric_opacity,
-                "position": position,
-                "fontSize": font_size
-            }
-            
-            motion_prompt = (
-                f"You are a World-Class Motion Designer. Create a 'Universal Motion Manifest' (JSON) for a lyric video overlay.\n"
-                f"AUDIO PROFILE:\n"
-                f"- Tempo: {profile['tempo']} BPM\n"
-                f"- Key: {profile['harmonicKey']}\n"
-                f"- Energy Flux: {np.mean(profile['energyFlux']):.2f} (0-1)\n"
-                f"- Grain (ZCR): {profile['audioGrain']:.3f}\n\n"
-                f"USER CONSTRAINTS (MUST RESPECT):\n"
-                f"- Font: {font_family if font_family else 'AI Decision (Choose a Google Font that perfectly matches the vibe)'}\n"
-                f"- Effect: {animation_effect if animation_effect else 'AI Decision (Choose a Kinetic Effect: fade, pop, slide, typewriter, glitch, neon)'}\n"
-                f"- Opacity: {lyric_opacity}\n"
-                f"- Position: {position}\n\n"
-                "TASK: Return a Valid JSON object. If User Constraints are present, use them. For 'AI Decision' fields, invent the perfect match for the audio.\n"
-                "DESIGN GOAL: Create a 'Living Overlay'. The text should feel like it exists in the same physical space as the music. Use Physics-based animation parameters.\n"
-                "JSON SCHEMA:\n"
-                "{\n"
-                '  "typography": { "fontFamily": "string", "fontWeight": 400-900, "tracking": -0.05 to 0.5, "fontSize": number },\n'
-                '  "palette": { "primary": "#hex", "secondary": "#hex", "shadow": "#hex", "glow": "#hex" },\n'
-                '  "layout": { "mode": "center/top/bottom", "offsetY": number },\n'
-                '  "kinetics": { "effect": "string", "reactivity": 0.0-2.0, "jitter": 0.0-1.0, "physics": "spring/linear" }\n'
-                "}\n"
-                "Respond ONLY with the JSON."
-            )
-            
-            motion_manifest = {}
-            try:
-                director_client = genai.Client(api_key=GOOGLE_API_KEY)
-                m_resp = director_client.models.generate_content(model='gemini-2.0-flash', contents=motion_prompt)
-                clean_json = m_resp.text.replace("```json", "").replace("```", "").strip()
-                motion_manifest = json.loads(clean_json)
-                
-                # STRICT ENFORCEMENT: Overwrite AI with User Choices if they exist
-                if font_family: motion_manifest.setdefault("typography", {})["fontFamily"] = font_family
-                if font_size: motion_manifest.setdefault("typography", {})["fontSize"] = font_size
-                if lyric_opacity: motion_manifest["typography"]["opacity"] = lyric_opacity
-                if position: motion_manifest.setdefault("layout", {})["mode"] = position
-                if animation_effect: motion_manifest.setdefault("kinetics", {})["effect"] = animation_effect
-                if lyric_color: motion_manifest.setdefault("palette", {})["primary"] = lyric_color
-                
-                print(f"[{job_id}] Motion Manifest Synthesized (User-Guided): {motion_manifest.keys()}")
-            except Exception as e:
-                print(f"[{job_id}] Motion Manifest generation failed: {e}. Using safe defaults.")
-                motion_manifest = {
-                    "typography": { "fontFamily": font_family or "Inter", "fontWeight": 800, "fontSize": font_size or 6 },
-                    "palette": { "primary": lyric_color or "#ffffff", "secondary": "#cccccc" },
-                    "layout": { "mode": position or "center" },
-                    "kinetics": { "effect": animation_effect or "fade", "reactivity": 1.0, "physics": "spring" }
-                }
-            
-
 
             # PHASE 5: WHISPERX TRANSCRIPTION (Singleton)
             model = WhisperModelManager.get_model()
@@ -1459,6 +1556,74 @@ async def process_job(job, job_token, parallel_generator=None):
             print(f"[{job_id}] Alignment Stats: Ratio={aligned_ratio:.2f}, MedianDur={median_duration:.3f}s, Overlaps={overlaps}")
             
             granularity = "word"
+            
+            # --- PHASE 7 (NEW POS): Universal Motion Manifest (Lyrical Awareness) ---
+            print(f"[{job_id}] Synthesizing Universal Motion Manifest (with lyrics)...")
+            
+            # Extract full song context
+            full_lyrics = " ".join([w["word"] for w in aligned_words]) if aligned_words else "Instrumental Audio"
+            
+            user_constraints = {
+                "fontFamily": font_family,
+                "animationEffect": animation_effect,
+                "lyricOpacity": lyric_opacity,
+                "position": position,
+                "fontSize": font_size
+            }
+            
+            motion_prompt = (
+                f"You are a World-Class Motion Designer. Create a 'Universal Motion Manifest' (JSON) for a lyric video overlay.\n"
+                f"AUDIO PROFILE:\n"
+                f"- Mood: {profile.get('mood', 'neutral').upper()}\n"
+                f"- Emotional Valence: {profile.get('emotionalValence', 0):+.2f} (-1.0 to 1.0)\n"
+                f"- Tempo: {profile.get('tempo', 120)} BPM\n"
+                f"- Key/Scale: {profile.get('harmonicKey', 'Unknown')}\n"
+                f"- Energy Contour: {profile.get('energyContour', 'steady')}\n"
+                f"- Spectral Chaos (Entropy): {profile.get('spectralEntropy', 5):.2f}\n"
+                f"- Percussive Impact: {profile.get('percussionRatio', 0.5):.2f} (High = Bold Fonts)\n"
+                f"- Grain (ZCR): {profile.get('audioGrain', 0.1):.3f}\n\n"
+                f"LYRICAL SOUL / CONTEXT:\n\"{full_lyrics}\"\n\n"
+                f"USER CONSTRAINTS (MUST RESPECT):\n"
+                f"- Font: {font_family if font_family else 'AI Decision (Choose a Google Font that perfectly matches the vibe and the LYRICS meaning)'}\n"
+                f"- Effect: {animation_effect if animation_effect else 'AI Decision (Choose a Kinetic Effect: fade, pop, slide, typewriter, glitch, neon)'}\n"
+                f"- Opacity: {lyric_opacity}\n"
+                f"- Position: {position}\n\n"
+                "TASK: Return a Valid JSON object. If User Constraints are present, use them. For 'AI Decision' fields, invent the perfect visual design that honors both the emotional acoustics AND the lyrical meaning.\n"
+                "DESIGN GOAL: Create a 'Living Overlay'. The typography and color palette MUST reflect the semantics of the words.\n"
+                "JSON SCHEMA:\n"
+                "{\n"
+                '  "typography": { "fontFamily": "string", "fontWeight": 400-900, "tracking": -0.05 to 0.5, "fontSize": number },\n'
+                '  "palette": { "primary": "#hex", "secondary": "#hex", "shadow": "#hex", "glow": "#hex" },\n'
+                '  "layout": { "mode": "center/top/bottom", "offsetY": number },\n'
+                '  "kinetics": { "effect": "string", "reactivity": 0.0-2.0, "jitter": 0.0-1.0, "physics": "spring/linear" }\n'
+                "}\n"
+                "Respond ONLY with the JSON."
+            )
+            
+            motion_manifest = {}
+            try:
+                director_client = genai.Client(api_key=GOOGLE_API_KEY)
+                m_resp = director_client.models.generate_content(model='gemini-2.0-flash', contents=motion_prompt)
+                clean_json = m_resp.text.replace("```json", "").replace("```", "").strip()
+                motion_manifest = json.loads(clean_json)
+                
+                # STRICT ENFORCEMENT: Overwrite AI with User Choices if they exist
+                if font_family: motion_manifest.setdefault("typography", {})["fontFamily"] = font_family
+                if font_size: motion_manifest.setdefault("typography", {})["fontSize"] = font_size
+                if lyric_opacity: motion_manifest["typography"]["opacity"] = lyric_opacity
+                if position: motion_manifest.setdefault("layout", {})["mode"] = position
+                if animation_effect: motion_manifest.setdefault("kinetics", {})["effect"] = animation_effect
+                if lyric_color: motion_manifest.setdefault("palette", {})["primary"] = lyric_color
+                
+                print(f"[{job_id}] Motion Manifest Synthesized (Songs + Lyrics): {motion_manifest.keys()}")
+            except Exception as e:
+                print(f"[{job_id}] Motion Manifest generation failed: {e}. Using safe defaults.")
+                motion_manifest = {
+                    "typography": { "fontFamily": font_family or "Inter", "fontWeight": 800, "fontSize": font_size or 6 },
+                    "palette": { "primary": lyric_color or "#ffffff", "secondary": "#cccccc" },
+                    "layout": { "mode": position or "center" },
+                    "kinetics": { "effect": animation_effect or "fade", "reactivity": 1.0, "physics": "spring" }
+                }
             fallback_used = False
             
             # Gate: If ratio < 0.85 or median duration is too short (<50ms), or no words aligned, fall back to phrases
@@ -1569,7 +1734,9 @@ async def process_job(job, job_token, parallel_generator=None):
                 video_title=video_title,
                 title_font_family=title_font_family,
                 parallel_generator=parallel_generator,
-                audio_profile=profile
+                audio_profile=profile,
+                resolution=resolution,
+                fps=fps
             )
             
             # 5. Save and Upload Analysis JSON
@@ -1585,20 +1752,22 @@ async def process_job(job, job_token, parallel_generator=None):
                 "language": language_code, "precision": "studio-high-v1",
                 "mood": mood, "position": position, 
                 "fontSize": font_size,
-                "fontFamily": font_family,
+                "fontFamily": font_family if font_family and "AI Decision" not in font_family else "Inter",
                 "styleId": style_id,
-                "position": position,
+                "resolution": resolution,
+                "fps": fps,
                 "videoTitle": video_title,
-                "titleFontFamily": title_font_family,
+                "titleFontFamily": title_font_family if title_font_family else "Syne",
                 "animationEffect": animation_effect, "lyricColor": lyric_color,
                 "lyricOpacity": lyric_opacity, "videoBgUrl": video_bg_url,
                 "profiling": profile,
+                "energy_flux": profile.get("energySeries", []), # Top-level for Remotion
                 "alignment": {
                     "method": "whisperx", "alignScore": round(aligned_ratio, 3),
                     "alignedRatio": round(aligned_ratio, 3), "fallbackUsed": fallback_used,
                     "granularity": granularity
                 },
-                "motion_manifest": motion_manifest, # NEW: Universal Motion Engine Manifest
+                "motion_manifest": motion_manifest, # Universal Motion Engine Manifest
                 "metrics": {
                     "alignScore": round(aligned_ratio, 3),
                     "coverage": round(coverage, 3),
