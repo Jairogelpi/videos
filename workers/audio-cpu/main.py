@@ -91,11 +91,11 @@ class WanModelManager:
     def get_pipe(cls):
         _ensure_ai_imports()
         if cls._pipe is None and WanPipeline is not None:
-            print("Loading Wan 2.1 (1.3B) [NEUTRON / LIGHT-SPEED]...")
+            print("Loading Wan 2.2 (5B) [HEAVYWEIGHT]...")
             try:
-                model_path = "/models/Wan2.1-T2V-1.3B-Diffusers"
+                model_path = "/models/Wan2.2-TI2V-5B-Diffusers"
                 if not os.path.exists(model_path):
-                    model_path = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+                    model_path = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
                 
                 cls._pipe = WanPipeline.from_pretrained(
                     model_path,
@@ -500,7 +500,7 @@ COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float32")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- HYPERCHARGE CONFIG (QUALITY HARD-LOCK) ---
-WAN_STEPS = 30 # Optimized for L4 speed while maintaining cinematic detail
+WAN_STEPS = 100 # Ultra-High Quality Mode: 100 steps required for perfect stability and detail
 WAN_GUIDANCE = 3.5 # Lowered to prevent DiT CFG Overbaking (Abstract Textures)
 DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "30"))
 DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "720p")
@@ -929,17 +929,19 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
     
     # ENSURE PHYSICALITY: Force strict descriptive anchors
     final_prompt = f"{current_prompt}, highly detailed, 3d, realistic materials, volumetric lighting, sharp focus, masterpiece"
-    final_negative = (
-        "abstract textures, blurry, noise, static, low quality, cartoon, flat colors, "
-        "distorted faces, messy patterns, wallpaper, glitch, flickering, incoherent objects, "
-        "grainy, placeholder, grey blob"
-    )
+    # EMPTY NEGATIVE: Deep negative prompts mathematically confuse Wan 1.3B DiT, forcing noise generation instead of prevention.
+    final_negative = ""
     
     # NATIVE RESOLUTION LOCK: Wan 2.1 1.3B is strictly a 480p model.
     # Forcing it above 480p (e.g. 720p) causes abstract noise/textures.
     # We generate safe, perfect 480p here, and upscale via FFmpeg MCI later.
     native_w = 480
     native_h = 832
+    
+    # CRITICAL INJECTION: Every clip MUST have a unique mathematical seed to prevent L4 noise persistence between generations
+    import time
+    seed = int(time.time() * 1000 + i * 999) % (2**32)
+    generator = torch.Generator(device=DEVICE).manual_seed(seed)
     
     output = wan_pipe(
         prompt=final_prompt,
@@ -948,7 +950,8 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
         height=native_h,
         num_frames=BASE_FRAMES,
         num_inference_steps=WAN_STEPS, 
-        guidance_scale=WAN_GUIDANCE
+        guidance_scale=WAN_GUIDANCE,
+        generator=generator
     )
     frames = output.frames[0]
     
@@ -1125,9 +1128,9 @@ async def generate_video_background(
             f"2. CONCRETE OBJECTS: Describe physical 3D objects. Use 'marble statue', 'wooden table', 'golden gears'.\n"
             f"3. MATERIALITY: Focus on TOUCH and TEXTURE. Use words like 'polished obsidian', 'weathered stone', 'wet skin'.\n"
             f"4. DYNAMIC LIGHTING: Specify 'rim lighting', 'volumetric fog', or 'harsh shadows'. Match lighting intensity to the Audio Dynamics and Energy Contour.\n"
-            f"5. CAMERA MOVEMENT: Add precise camera directions (e.g., 'fast crash zoom', 'slow ethereal pan', 'shaky handheld') matching the local Scene Tempo and Energy.\n"
+            f"5. KINETIC CAMERA (MUSIC VIDEO STYLE): Every shot MUST have dynamic, continuous camera movement matching the tempo. Use terms like 'fast tracking push', 'rapid whip pan', 'sweeping drone shot circling', 'shaky handheld dash', 'dramatic tilt up'. FORBID COMPLETELY STATIC SHOTS. Make it feel alive and kinetic.\n"
             f"6. PURE PHOTOREALISM (NO ABSTRACTION): You MUST NOT use words like 'metaphor', 'concept', 'dreamy', 'surreal', 'floating music', 'emotions', or 'spirit'. Describe ONLY what a physical camera can film.\n"
-            f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action/state], [specific environment], [lighting details], [camera movement], high contrast, masterpiece'.\n"
+            f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action/state], [specific environment], [lighting details], [kinetic camera movement], high contrast, masterpiece'.\n"
             f"Output JSON array of strings ONLY."
         )
         try:

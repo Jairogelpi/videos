@@ -18,8 +18,8 @@ app = modal.App("wan-downloader", image=image)
 def download_model():
     from huggingface_hub import snapshot_download
     
-    model_id = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
-    local_dir = "/models/Wan2.2-T2V-A14B-Diffusers"
+    model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    local_dir = "/models/Wan2.2-TI2V-5B-Diffusers"
     
     print(f"Starting download of {model_id} to {local_dir}...")
     
@@ -33,7 +33,7 @@ def download_model():
     print(f"Download complete to {path}!")
     
     # Verify files exist in the volume mount
-    print("Verifying files in /models/Wan2.2-T2V-A14B-Diffusers:")
+    print("Verifying files in /models/Wan2.2-TI2V-5B-Diffusers:")
     subprocess.run(["ls", "-lh", local_dir])
     
     volume.commit()
