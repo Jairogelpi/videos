@@ -536,7 +536,7 @@ COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float32")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- HYPERCHARGE CONFIG (QUALITY HARD-LOCK) ---
-WAN_STEPS = 50 # Maximum convergence (Plan: Concrete Reality)
+WAN_STEPS = 30 # Optimized for L4 speed while maintaining cinematic detail
 WAN_GUIDANCE = 5.0 # Sweet spot for stability and 3D depth
 DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "30"))
 DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "720p")

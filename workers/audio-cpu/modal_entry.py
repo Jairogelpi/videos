@@ -71,7 +71,7 @@ secrets = [
 
 @app.cls(
     gpu="L4",  # Value-First: Significantly cheaper than A100 (~70% savings)
-    timeout=900,
+    timeout=1500, # Increased for complex generation safety
     secrets=secrets,
     volumes={"/models": models_volume},
     min_containers=0,  # On-demand to save credits (B200 = ~$3-4/hr idle cost)
