@@ -15,6 +15,8 @@ os.environ["TORCHAUDIO_BACKEND"] = "soundfile"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # Silence torchcodec / FFmpeg version noise
 os.environ["TORCHCODEC_LOG_LEVEL"] = "ERROR"
+# Silence huggingface/tokenizers parallelism warning
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # -------------------------------------------------------------------
 print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 print("!!! MAIN.PY LOADED V9 (KERNEL HANDOFF) !!!")
@@ -88,9 +90,9 @@ class T5ModelManager:
     @classmethod
     def get_model(cls):
         _ensure_ai_imports()
-        from transformers import T5EncoderModel, T5TokenizerFast, BitsAndBytesConfig
+        from transformers import T5EncoderModel, T5TokenizerFast
         if cls._model is None:
-            print("Loading Shared T5-v1.1-XXL Encoder (8-bit Hypercharge)...")
+            print("Loading Shared T5-v1.1-XXL Encoder (Pure bfloat16/fp16 for quality)...")
             try:
                 t5_path = "/models/Wan2.1-T2V-1.3B-Diffusers/text_encoder"
                 if not os.path.exists(t5_path):
@@ -98,21 +100,14 @@ class T5ModelManager:
                 
                 cls._tokenizer = T5TokenizerFast.from_pretrained(t5_path)
                 
-                # Zero-Latency: 8-bit quantization to fit everything in VRAM
-                quantization_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
-                    llm_int8_threshold=6.0,
-                    llm_int8_enable_fp32_cpu_offload=False
-                )
-                
+                # Zero-Latency: Load in bfloat16 to preserve the embedding space perfectly.
+                # We do NOT use device_map="auto" here because WanPipeline will handle the CPU offloading.
                 cls._model = T5EncoderModel.from_pretrained(
                     t5_path,
-                    quantization_config=quantization_config,
-                    device_map="auto", # BitsAndBytes handles device mapping
-                    torch_dtype=torch.float16,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
                     variant="fp16" if "Wan2.1" in t5_path else None
                 )
-                print("Shared T5 Encoder (8-bit) Ready.")
+                print("Shared T5 Encoder Ready.")
             except Exception as e:
                 print(f"CRITICAL: Shared T5 Load Failed: {e}")
                 cls._model = "FAILED"
@@ -137,26 +132,28 @@ class WanModelManager:
                     model_path,
                     text_encoder=t5_model,
                     tokenizer=t5_tokenizer,
-                    torch_dtype=torch.float16,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
                     local_files_only=os.path.exists(model_path)
                 )
-                # Zero-Latency: Stay on GPU!
-                # Zero-Latency: Stay on GPU!
-                cls._pipe.to("cuda")
                 
                 vram_gb = get_gpu_memory_gb()
                 if vram_gb > 30:
-                    print(f"[{vram_gb:.1f}GB VRAM] High-VRAM GPU Detected (A100/H100). Disabling VAE Tiling for Max Speed.")
+                    print(f"[{vram_gb:.1f}GB VRAM] High-VRAM GPU Detected (A100/H100). Staying on GPU for Max Speed.")
+                    cls._pipe.to("cuda")
                 else:
+                    # SMART CPU OFFLOAD: Crucial for L4 (24GB) so the un-quantized T5 model fits during VAE/UNet passes.
+                    print("Wan 2.1 SMART CPU Offloading Enabled (L4/Limited VRAM).")
+                    cls._pipe.enable_model_cpu_offload()
+                    
                     # VAE Tiling (CRITICAL for 24GB VRAM)
                     try:
                         cls._pipe.vae.enable_tiling()
-                        print("Wan 2.1 VAE Tiling Enabled (L4/Limited VRAM).")
+                        print("Wan 2.1 VAE Tiling Enabled.")
                     except:
                         print("Wan 2.1 VAE Tiling NOT Supported (Risk of OOM).")
 
                 torch.cuda.empty_cache()
-                print(f"Wan 2.1 (GPU Resident) ready.")
+                print(f"Wan 2.1 Pipeline ready.")
             except Exception as e:
                 print(f"CRITICAL: Wan Engine Load Failed: {e}")
                 cls._pipe = "FAILED"
@@ -1156,7 +1153,7 @@ async def generate_video_background(
             f"3. MATERIALITY: Focus on TOUCH and TEXTURE. Use words like 'polished obsidian', 'weathered stone', 'wet skin'.\n"
             f"4. DYNAMIC LIGHTING: Specify 'rim lighting', 'volumetric fog', or 'harsh shadows'. Match lighting intensity to the Audio Dynamics and Energy Contour.\n"
             f"5. CAMERA MOVEMENT: Add precise camera directions (e.g., 'fast crash zoom', 'slow ethereal pan', 'shaky handheld') matching the local Scene Tempo and Energy.\n"
-            f"6. NO ABSTRACTION: Do NOT use words like 'metaphor', 'concept', 'dreamy', or 'spirit'. Focus on REALITY.\n"
+            f"6. PURE PHOTOREALISM (NO ABSTRACTION): You MUST NOT use words like 'metaphor', 'concept', 'dreamy', 'surreal', 'floating music', 'emotions', or 'spirit'. Describe ONLY what a physical camera can film.\n"
             f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action/state], [specific environment], [lighting details], [camera movement], high contrast, masterpiece'.\n"
             f"Output JSON array of strings ONLY."
         )
