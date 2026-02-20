@@ -99,7 +99,7 @@ class WanModelManager:
                 
                 cls._pipe = WanPipeline.from_pretrained(
                     model_path,
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+                    torch_dtype=torch.float16, # NO BFLOAT16: Prevents UMT5 numerical instability on L4 architecture
                     local_files_only=os.path.exists(model_path)
                 )
                 
@@ -501,7 +501,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- HYPERCHARGE CONFIG (QUALITY HARD-LOCK) ---
 WAN_STEPS = 30 # Optimized for L4 speed while maintaining cinematic detail
-WAN_GUIDANCE = 5.0 # Sweet spot for stability and 3D depth
+WAN_GUIDANCE = 3.5 # Lowered to prevent DiT CFG Overbaking (Abstract Textures)
 DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "30"))
 DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "720p")
 # ------------------------------------
