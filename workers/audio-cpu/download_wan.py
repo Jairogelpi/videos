@@ -18,8 +18,8 @@ app = modal.App("wan-downloader", image=image)
 def download_model():
     from huggingface_hub import snapshot_download
     
-    model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-    local_dir = "/models/Wan2.2-TI2V-5B-Diffusers"
+    model_id = "Wan-AI/Wan2.1-T2V-14B-Diffusers"
+    local_dir = "/models/Wan2.1-T2V-14B-Diffusers"
     
     print(f"Starting download of {model_id} to {local_dir}...")
     

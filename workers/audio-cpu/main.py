@@ -58,6 +58,12 @@ def _ensure_ai_imports():
         genai = _genai
         types = _types
         whisperx = _wx
+        
+        # --- A100 SPEED OPTIMIZATIONS ---
+        # Enable TensorFloat-32 (TF32) for massive speedups on Ampere (A100) GPUs
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("TF32 MatMul optimizations enabled for maximum speed.")
         DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
         import ftfy
 
@@ -91,22 +97,28 @@ class WanModelManager:
     def get_pipe(cls):
         _ensure_ai_imports()
         if cls._pipe is None and WanPipeline is not None:
-            print("Loading Wan 2.2 (5B) [HEAVYWEIGHT]...")
+            print("Loading Wan 2.1 (14B) [COLOSSUS ENGINE]...")
             try:
-                model_path = "/models/Wan2.2-TI2V-5B-Diffusers"
+                # 1. Prioritize baked image path (Ultra-fast local NVMe load)
+                model_path = "/baked_models/Wan2.1-T2V-14B-Diffusers"
                 if not os.path.exists(model_path):
-                    model_path = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+                    # 2. Fallback to sluggish shared volume (Legacy load)
+                    model_path = "/models/Wan2.1-T2V-14B-Diffusers"
+                if not os.path.exists(model_path):
+                    # 3. Last resort network streaming
+                    model_path = "Wan-AI/Wan2.1-T2V-14B-Diffusers"
                 
                 cls._pipe = WanPipeline.from_pretrained(
                     model_path,
-                    torch_dtype=torch.float16, # NO BFLOAT16: Prevents UMT5 numerical instability on L4 architecture
+                    torch_dtype=torch.bfloat16, # BFLOAT16: Massive speedup on A100. Native precision for Wan 14B.
+                    device_map="cuda",         # FORCE GPU: "balanced" can spill weights to CPU, destroying step speed. We force everything into the 80GB VRAM.
                     local_files_only=os.path.exists(model_path)
                 )
                 
                 vram_gb = get_gpu_memory_gb()
                 if vram_gb > 30:
                     print(f"[{vram_gb:.1f}GB VRAM] High-VRAM GPU Detected (A100/H100). Staying on GPU for Max Speed.")
-                    cls._pipe.to("cuda")
+                    # Model already on CUDA via device_map
                 else:
                     # SMART CPU OFFLOAD: Crucial for L4 (24GB) so the un-quantized T5 model fits during VAE/UNet passes.
                     print("Wan 2.1 SMART CPU Offloading Enabled (L4/Limited VRAM).")
@@ -500,8 +512,8 @@ COMPUTE_TYPE = os.getenv("COMPUTE_TYPE", "float32")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # --- HYPERCHARGE CONFIG (QUALITY HARD-LOCK) ---
-WAN_STEPS = 100 # Ultra-High Quality Mode: 100 steps required for perfect stability and detail
-WAN_GUIDANCE = 3.5 # Lowered to prevent DiT CFG Overbaking (Abstract Textures)
+WAN_STEPS = 50 # Concrete Reality Mode: 50 steps is the required balance of speed and high fidelity
+WAN_GUIDANCE = 5.0 # Restored to 5.0 to enforce strict prompt adherence
 DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "30"))
 DEFAULT_RESOLUTION = os.getenv("DEFAULT_RESOLUTION", "720p")
 # ------------------------------------
@@ -914,7 +926,7 @@ def synthesize_audio_narrative(profile: Dict[str, Any]) -> str:
 
 
 
-def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir, fps=24, width=720, height=1280):
+def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir, fps=60, width=720, height=1280):
     _ensure_ai_imports()
     wan_pipe = WanModelManager.get_pipe()
     
@@ -923,20 +935,20 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
     
     print(f"[{job_id}] Scene {i+1}/{num_clips} [Stage 1/2: WAN ({width}x{height} @ {fps}fps)]")
     
-    # Stage 1: Wan 2.1 Motion
-    # L4 Optimization: Use 33 frames to balance resolution and quality
-    BASE_FRAMES = 33 
+    # FINAL QUALITY OVERHAUL: Set BASE_FRAMES to 81 (Wan's ideal limit).
+    # This provides ~5.06 seconds of native motion at 16fps.
+    # No more slow-motion stretching!
+    BASE_FRAMES = 81 
     
     # ENSURE PHYSICALITY: Force strict descriptive anchors
     final_prompt = f"{current_prompt}, highly detailed, 3d, realistic materials, volumetric lighting, sharp focus, masterpiece"
     # EMPTY NEGATIVE: Deep negative prompts mathematically confuse Wan 1.3B DiT, forcing noise generation instead of prevention.
     final_negative = ""
     
-    # NATIVE RESOLUTION LOCK: Wan 2.1 1.3B is strictly a 480p model.
-    # Forcing it above 480p (e.g. 720p) causes abstract noise/textures.
-    # We generate safe, perfect 480p here, and upscale via FFmpeg MCI later.
-    native_w = 480
-    native_h = 832
+    # ABSOLUTE SHARPNESS LOCK: Generating at native 720p for the 14B model.
+    # The A100-80GB handles this easily.
+    native_w = 720
+    native_h = 1280
     
     # CRITICAL INJECTION: Every clip MUST have a unique mathematical seed to prevent L4 noise persistence between generations
     import time
@@ -960,17 +972,25 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
     
     print(f"[{job_id}] Scene {i+1}/{num_clips} [Stage 3/3: MCI]")
     
-    # Stage 3: Light-Speed FFmpeg MCI
+    # Stage 3: Hyper-Fluid FFmpeg MCI (60fps Extreme Reconstruction)
     interp_path = os.path.join(tmp_dir, f"scene_{i}.mp4")
-    pts_factor = scene_dur / (BASE_FRAMES/16)
     
+    # NO SLOW-MO: We match the native AI motion period to the audio segment.
+    raw_native_dur = BASE_FRAMES / 16.0 
+    time_stretch_factor = scene_dur / raw_native_dur
+    
+    # LIMIT STRETCH: Cap at 1.25x to preserve motion fluidity and avoid 'sludge'.
+    if time_stretch_factor > 1.25:
+        print(f"[{job_id}] WARNING: Scene duration ({scene_dur}s) is much longer than AI motion ({raw_native_dur}s). Capping stretch to 1.25x.")
+        time_stretch_factor = 1.25
+        
     try:
         subprocess.run([
             "ffmpeg", "-y", "-i", raw_path,
             "-vf", (
-                f"setpts={pts_factor}*PTS,"
-                f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=obmc,"
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"setpts={time_stretch_factor}*PTS," # 1. Synchronize to audio
+                f"minterpolate=fps={fps}:mi_mode=mci:mc_mode=obmc:me_mode=bidir:vsbmc=1:search_param=128," # 2. 60FPS Hyper-Fluid Interpolation
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease," # 3. Spatial scale to target
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
                 f"unsharp=5:5:0.8:5:5:0.0," # Professional Sharpening
                 f"noise=alls=5:allf=t+u," # Subtle Film Grain
@@ -992,7 +1012,7 @@ async def generate_video_background(
     lyric_opacity: Optional[float] = None, position: Optional[str] = None, font_size: Optional[int] = None,
     video_title: Optional[str] = None, title_font_family: Optional[str] = None,
     parallel_generator=None, audio_profile: Dict[str, Any] = None,
-    resolution: str = "1080p", fps: int = 24
+    resolution: str = "1080p", fps: int = 60
 ) -> str:
     """
     Beat-Sync Narrative Engine (Plan Light-Speed).
@@ -1052,24 +1072,24 @@ async def generate_video_background(
         full_lyrics = " ".join([w["w"] for w in transcription_words]) if transcription_words else "Instrumental"
         
         vision_prompt = (
-            f"You are a VISIONARY FILM DIRECTOR and SYMBOLIST ARTIST (Aki Kaurismäki, Denis Villeneuve, Alejandro Jodorowsky).\n"
-            f"GOAL: Create a visual masterpiece that isn't just 'cool' but DEEPLY SYNCHRONIZED with the song's soul.\n\n"
+            f"You are a VISIONARY FILM DIRECTOR and SYMBOLIST ARTIST (Aki Kaurismäki, Villeneuve, Jodorowsky).\n"
+            f"GOAL: Create a visual masterpiece DEEPLY SYNCHRONIZED with the song's semiotics and lyrics.\n\n"
             f"SONG ANALYSIS:\n"
             f"- MOOD/INTENSITY: {audio_mood.upper()}\n"
             f"- MUSICAL NARRATIVE: {audio_narrative}\n"
             f"- USER THEME: '{bg_prompt}'\n"
             f"- ARTISTIC STYLE: '{style_id or 'Visual Poetry'}'\n"
             f"THE DIRECTOR'S MISSION:\n"
-            f"1. CONCRETE REALITY: Do NOT be abstract. Every scene MUST feature a tangible, recognizable object or person. Avoid 'voids', 'concepts', or 'spirits'.\n"
-            f"2. PHYSICAL SYMBOLISM: If the lyric is 'pain', show a physical object breaking (a mirror, a statue, a bone). Show MATERIALITY.\n"
-            f"3. CINEMATIC PAYOFF: Your total {num_clips} scenes are aligned to the song's energy peaks. Ensure the most intense scene corresponds to the climax.\n"
-            f"4. DEPTH & VOLUME: Describe 3D space. Use terms like 'foreground', 'background', 'silhouetted', 'macro perspective'.\n"
-            f"5. COHERENCE: The protagonist must be the anchor of every scene.\n\n"
+            f"1. SEMANTIC ANCHORING: Every scene MUST be a direct visual translation of the underlying lyrics. If a concrete object is named, it MUST appear.\n"
+            f"2. THE METAPHORICAL BRIDGE: If lyrics are emotional (e.g. 'loneliness'), translate them to a PHYSICAL STATE (e.g. 'a single lighthouse in a storm', 'a crack in a dry desert floor'). Avoid generic imagery.\n"
+            f"3. MATERIALITY & SYMBOLISM: Focus on raw textures. Use physical objects to represent abstract ideas. (e.g. Time = 'leaking hourglass', Betrayal = 'a glass shattering in slow-mo').\n"
+            f"4. DEPTH & SPACE: Describe 3D environments with 'foreground', 'background', and 'dramatic perspective shifts'.\n"
+            f"5. COHERENCE: Maintain the protagonist and the 'Visual Identity Bible' across all {num_clips} scenes.\n\n"
             f"OUTPUT JSON WITH:\n"
-            f"- 'protagonist': A unique, tangible character embodying the theme.\n"
-            f"- 'artistic_movement': Use '{style_id}' if relevant, or define a bold, consistent movement.\n"
+            f"- 'protagonist': A specific, tangible character (be descriptive).\n"
+            f"- 'artistic_movement': Use '{style_id}' or a bold consistent movement.\n"
             f"- 'color_palette': 3 specific, atmospheric colors.\n"
-            f"- 'narrative_arc': A physical, metaphorical journey spanning all {num_clips} clips.\n"
+            f"- 'narrative_arc': A physical/metaphorical journey mapping to the song's energy.\n"
             f"JSON ONLY."
         )
         
@@ -1116,23 +1136,22 @@ async def generate_video_background(
         scene_context_block = "\n".join(scene_lyrics_context)
         
         scene_generation_prompt = (
-            f"Using the Blueprint below, write exactly {num_clips} VISUALLY COHERENT and CINEMATIC scene descriptions.\n"
+            f"Using the Blueprint below, write exactly {num_clips} scene descriptions that are OBSESSIVELY FAITHFUL to the lyrics.\n"
             f"BLUEPRINT: {json.dumps(blueprint)}\n\n"
-            f"--- GLOBAL AUDIO CONTEXT (USE FOR LIGHTING & CAMERA) ---\n"
-            f"{audio_narrative}\n\n"
-            f"--- SCENE CONTEXT ---\n"
+            f"--- SCENE CONTEXT (LYRICS PER SEGMENT) ---\n"
             f"{scene_context_block}\n"
-            f"---------------------\n\n"
-            f"INSTRUCTIONS FOR HIGH-FIDELITY VIDEO:\n"
-            f"1. VISUAL CONSISTENCY: Define a 'VISUAL IDENTITY BIBLE' at the start of your response. Every scene MUST follow this bible (e.g., 'Protagonist is a 30yo man with a red jacket').\n"
-            f"2. CONCRETE OBJECTS: Describe physical 3D objects. Use 'marble statue', 'wooden table', 'golden gears'.\n"
-            f"3. MATERIALITY: Focus on TOUCH and TEXTURE. Use words like 'polished obsidian', 'weathered stone', 'wet skin'.\n"
-            f"4. DYNAMIC LIGHTING: Specify 'rim lighting', 'volumetric fog', or 'harsh shadows'. Match lighting intensity to the Audio Dynamics and Energy Contour.\n"
-            f"5. KINETIC CAMERA (MUSIC VIDEO STYLE): Every shot MUST have dynamic, continuous camera movement matching the tempo. Use terms like 'fast tracking push', 'rapid whip pan', 'sweeping drone shot circling', 'shaky handheld dash', 'dramatic tilt up'. FORBID COMPLETELY STATIC SHOTS. Make it feel alive and kinetic.\n"
-            f"6. PURE PHOTOREALISM (NO ABSTRACTION): You MUST NOT use words like 'metaphor', 'concept', 'dreamy', 'surreal', 'floating music', 'emotions', or 'spirit'. Describe ONLY what a physical camera can film.\n"
-            f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action/state], [specific environment], [lighting details], [kinetic camera movement], high contrast, masterpiece'.\n"
+            f"----------------------------------------\n\n"
+            f"STRICT DIRECTIVES FOR FIDELITY:\n"
+            f"1. LITERAL PRIORITY: Look at the 'LYRICS SUNG' for each scene. If a NOUN (e.g., 'rose', 'crown', 'storm') or ACTION is named, it MUST be the central focus of the scene description.\n"
+            f"2. SYMBOLIC TRANSLATION: If the lyrics are abstract/metaphorical, translate them into a PHYSICAL, FILMIC object or action that captures the essence. (e.g. 'I'm falling' -> 'Protagonist plunging through a high-altitude cloud layer in macro detail').\n"
+            f"3. VISUAL IDENTITY BIBLE: Start by defining the physical look of the Protagonist. Every scene MUST maintain this description.\n"
+            f"4. KINETIC MUSIC VIDEO STYLE: Every shot MUST have dynamic camera movement (push, orbit, whip pan, tilt) matching the {tempo} BPM tempo. ZERO STATIC SHOTS.\n"
+            f"5. SHARP DETAIL & LIGHTING: Describe specific 3D materials (brushed steel, velvet, wet asphalt) and professional lighting (Gobo shadows, Rim lighting, 3-point cinematic).\n"
+            f"6. NO JARGON: Describe only what is visible. Avoid 'conceptually', 'metaphorically', 'symbolically'. Describe the PHYSICAL SCENE.\n"
+            f"7. PROMPT FORMAT: 'Photorealistic cinematic shot of [PROTAGONIST] [action involving lyric elements], [specific environment], [lighting], [camera motion], high contrast, masterpiece'.\n"
             f"Output JSON array of strings ONLY."
         )
+
         try:
             scene_response = director_client.models.generate_content(model="gemini-2.0-flash", contents=scene_generation_prompt)
             text = scene_response.text.strip()
@@ -1148,13 +1167,8 @@ async def generate_video_background(
         tmp_dir = tempfile.mkdtemp()
         clip_paths = []
         
-        # Narrative transition duration (semi-dynamic based on tempo)
-        tempo = audio_profile.get("tempo", 120)
-        TR_DUR = 1.0 if tempo < 100 else 0.75
-        
-        # QUALITY LOGIC: To avoid the final video being too short due to xfade overlaps,
-        # we add TR_DUR to every clip's generation duration EXCEPT the last one.
-        generator_durations = [round(d + TR_DUR, 3) for d in scene_durations[:-1]] + [scene_durations[-1]]
+        # No transitions: generator duration exactly matches scene duration
+        generator_durations = scene_durations
         
         if parallel_generator:
             print(f"[{job_id}] ⚡ Triggering Parallel Light-Speed Generation (Padded for Transitions)...")
@@ -1213,61 +1227,17 @@ async def generate_video_background(
         # Actually, proper xfade requires identical resolution inputs. 
         # The clips are already 720x1280 from Wan.
         
-        # B) XFADE Chain
-        # Stream 0 is [0:v]. 
-        # We fade [0:v] and [1:v] -> v1
-        # v1 and [2:v] -> v2 ...
-        
-        # Narrative transition duration (semi-dynamic based on tempo)
-        tempo = audio_profile.get("tempo", 120)
-        perc_ratio = audio_profile.get("percussionRatio", 0.3)
-        contour = audio_profile.get("energyContour", "steady")
-        
-        # Determine exact transition style based on audio DNA
-        if tempo > 140 and perc_ratio > 0.6:
-            # Hyper-energetic (Electronic/Metal)
-            TR_DUR = 0.4
-            transitions = ["wiperight", "wipeleft", "slideup", "slidedown"]
-        elif tempo > 110:
-            # Upbeat (Pop/Rock)
-            TR_DUR = 0.75
-            transitions = ["fade", "smoothleft", "smoothright"]
-        elif contour == "falling":
-            # Ending or dropping energy
-            TR_DUR = 1.5
-            transitions = ["fade", "fadeblack"]
-        else:
-            # Slow, atmospheric, or cinematic
-            TR_DUR = 1.2
-            transitions = ["fade", "distance"]
-        
-        import random
-
+        # B) Hard Cut Concat Chain (No Transitions)
         if len(clip_paths) > 1:
-            # Prepare inputs (just labels)
-            filter_complex += f"[0:v]setsar=1[v0];"
-            for i in range(1, len(clip_paths)):
+            for i in range(len(clip_paths)):
                 filter_complex += f"[{i}:v]setsar=1[v{i}];"
-                
-            # Chain
-            curr_offset = 0
-            for i in range(len(clip_paths) - 1):
-                seg_dur = scene_durations[i]
-                curr_offset += seg_dur
-                
-                input_a = "v0" if i == 0 else f"vm{i}"
-                input_b = f"v{i+1}"
-                output_v = f"vm{i+1}"
-                
-                # Pick a random transition from the matched energy pool
-                tr_effect = random.choice(transitions)
-                
-                filter_complex += f"[{input_a}][{input_b}]xfade=transition={tr_effect}:duration={TR_DUR}:offset={curr_offset:.2f}[{output_v}];"
             
-            last_label = f"vm{len(clip_paths)-1}"
+            concat_inputs = "".join([f"[v{i}]" for i in range(len(clip_paths))])
+            filter_complex += f"{concat_inputs}concat=n={len(clip_paths)}:v=1:a=0[vconcat];"
+            last_label = "vconcat"
         else:
-            filter_complex += "[0:v]null[vm0];"
-            last_label = "vm0"
+            filter_complex += "[0:v]setsar=1[vconcat];"
+            last_label = "vconcat"
 
         # C) Masterpiece Polish: Upscale + Sharpen
         filter_complex += (
@@ -1336,7 +1306,7 @@ async def process_job(job, job_token, parallel_generator=None):
     
     # Fully Dynamic Config (No Mocks)
     resolution = job.data.get('resolution', DEFAULT_RESOLUTION)
-    fps = int(job.data.get('fps', DEFAULT_FPS))
+    fps = 30 # Forced 30fps as requested by user
     duration_total = float(job.data.get('duration_sec', 60))
     
     # Cap duration to requested total (60s limit)

@@ -40,6 +40,11 @@ image = (
     # 2. Legacy cuDNN 8 for WhisperX/CTranslate2 Support
     .pip_install("nvidia-cudnn-cu11==8.9.6.50", "nvidia-cublas-cu11==11.11.3.6")
     .env({"HF_HOME": "/models", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # BAKE WAN 14B INTO THE CONTINER IMAGE: Eliminates network volume bottlenecks during cold start
+    # We must rm -rf /models/* afterwards because huggingface-cli writes its cache there, and Modal Volumes require an empty mount point.
+    .run_commands(
+        "huggingface-cli download Wan-AI/Wan2.1-T2V-14B-Diffusers --local-dir /baked_models/Wan2.1-T2V-14B-Diffusers && rm -rf /models/*"
+    )
     # (Plan Zero-Chill: Bakery removed from build to avoid timeouts; lazy imports in main.py handle the speed)
     .add_local_dir(
         local_path=os.path.dirname(os.path.abspath(__file__)),
@@ -70,12 +75,13 @@ secrets = [
 
 
 @app.cls(
-    gpu="L4",  # Value-First: Significantly cheaper than A100 (~70% savings)
+    gpu="A100-80GB",  # COLOSSUS ENGINE: Required for 14B VRAM
     timeout=1500, # Increased for complex generation safety
     secrets=secrets,
     volumes={"/models": models_volume},
-    min_containers=0,  # On-demand to save credits (B200 = ~$3-4/hr idle cost)
+    min_containers=0,  # On-demand to save credits
     scaledown_window=600,  # Keep container alive 10 min after last request
+    max_containers=100, # MASSIVE SCALE: Allow 100 workers simultaneously
     enable_memory_snapshot=True,  # <--- CRITICAL: Snapshot memory state after startup for millisecond cold-starts
 )
 class AudioWorker:
