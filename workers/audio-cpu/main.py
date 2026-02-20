@@ -968,11 +968,17 @@ def generate_single_scene(job_id, i, num_clips, scenes, scene_durations, tmp_dir
         "grainy, placeholder, grey blob"
     )
     
+    # NATIVE RESOLUTION LOCK: Wan 2.1 1.3B is strictly a 480p model.
+    # Forcing it above 480p (e.g. 720p) causes abstract noise/textures.
+    # We generate safe, perfect 480p here, and upscale via FFmpeg MCI later.
+    native_w = 480
+    native_h = 832
+    
     output = wan_pipe(
         prompt=final_prompt,
         negative_prompt=final_negative,
-        width=width,
-        height=height,
+        width=native_w,
+        height=native_h,
         num_frames=BASE_FRAMES,
         num_inference_steps=WAN_STEPS, 
         guidance_scale=WAN_GUIDANCE
