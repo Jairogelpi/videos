@@ -83,35 +83,6 @@ def safe_clip_prompt(prompt, max_tokens=77, quality_tags=" cinematic movie still
     
     return prompt + quality_tags
 
-class T5ModelManager:
-    _model = None
-    _tokenizer = None
-
-    @classmethod
-    def get_model(cls):
-        _ensure_ai_imports()
-        from transformers import T5EncoderModel, T5TokenizerFast
-        if cls._model is None:
-            print("Loading Shared T5-v1.1-XXL Encoder (Pure bfloat16/fp16 for quality)...")
-            try:
-                t5_path = "/models/Wan2.1-T2V-1.3B-Diffusers/text_encoder"
-                if not os.path.exists(t5_path):
-                    t5_path = "google/t5-v1_1-xxl"
-                
-                cls._tokenizer = T5TokenizerFast.from_pretrained(t5_path)
-                
-                # Zero-Latency: Load in bfloat16 to preserve the embedding space perfectly.
-                # We do NOT use device_map="auto" here because WanPipeline will handle the CPU offloading.
-                cls._model = T5EncoderModel.from_pretrained(
-                    t5_path,
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-                    variant="fp16" if "Wan2.1" in t5_path else None
-                )
-                print("Shared T5 Encoder Ready.")
-            except Exception as e:
-                print(f"CRITICAL: Shared T5 Load Failed: {e}")
-                cls._model = "FAILED"
-        return (cls._model, cls._tokenizer) if cls._model != "FAILED" else (None, None)
 
 class WanModelManager:
     _pipe = None
@@ -126,12 +97,8 @@ class WanModelManager:
                 if not os.path.exists(model_path):
                     model_path = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
                 
-                t5_model, t5_tokenizer = T5ModelManager.get_model()
-                
                 cls._pipe = WanPipeline.from_pretrained(
                     model_path,
-                    text_encoder=t5_model,
-                    tokenizer=t5_tokenizer,
                     torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
                     local_files_only=os.path.exists(model_path)
                 )
